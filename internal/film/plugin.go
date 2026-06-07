@@ -123,6 +123,13 @@ func (p *Plugin) RegisterRoutes(r gin.IRouter) {
 			auth.GET("/tags", p.handleTagList)
 			auth.POST("/movies/:id/tags", p.handleMovieTagAttach)
 			auth.DELETE("/movies/:id/tags/:tagId", p.handleMovieTagDetach)
+
+			// Subtitles (upload → SRT/VTT parsed into segments) + 台词 search.
+			auth.POST("/movies/:id/subtitles", p.handleSubtitleUpload)
+			auth.GET("/movies/:id/subtitles", p.handleSubtitleList)
+			auth.GET("/subtitles/:subId/segments", p.handleSubtitleSegments)
+			auth.DELETE("/subtitles/:subId", p.handleSubtitleDelete)
+			auth.GET("/search", p.handleSearch)
 		}
 	}
 }
