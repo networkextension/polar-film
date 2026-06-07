@@ -130,7 +130,7 @@ func (p *Plugin) handleScreenshotURL(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "bad asset_id"})
 		return
 	}
-	url, err := p.Dock.AssetDownloadURL(assetID)
+	url, err := p.Dock.AssetDownloadURLWS(assetID, wsID)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "sign url: " + err.Error()})
 		return
