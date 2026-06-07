@@ -104,6 +104,25 @@ func (p *Plugin) RegisterRoutes(r gin.IRouter) {
 		auth := api.Group("", p.requireAuthViaDock())
 		{
 			auth.GET("/_whoami", p.handleWhoami)
+
+			// Movies (media_items).
+			auth.POST("/movies", p.handleMovieCreate)
+			auth.GET("/movies", p.handleMovieList)
+			auth.GET("/movies/:id", p.handleMovieDetail)
+			auth.PATCH("/movies/:id", p.handleMovieUpdate)
+			auth.DELETE("/movies/:id", p.handleMovieDelete)
+
+			// People + cast links.
+			auth.POST("/people", p.handlePersonCreate)
+			auth.GET("/people", p.handlePersonList)
+			auth.POST("/movies/:id/people", p.handleMoviePersonAttach)
+			auth.DELETE("/movies/:id/people/:personId/:role", p.handleMoviePersonDetach)
+
+			// Tags + links.
+			auth.POST("/tags", p.handleTagCreate)
+			auth.GET("/tags", p.handleTagList)
+			auth.POST("/movies/:id/tags", p.handleMovieTagAttach)
+			auth.DELETE("/movies/:id/tags/:tagId", p.handleMovieTagDetach)
 		}
 	}
 }
