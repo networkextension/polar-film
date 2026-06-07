@@ -130,6 +130,12 @@ func (p *Plugin) RegisterRoutes(r gin.IRouter) {
 			auth.GET("/subtitles/:subId/segments", p.handleSubtitleSegments)
 			auth.DELETE("/subtitles/:subId", p.handleSubtitleDelete)
 			auth.GET("/search", p.handleSearch)
+
+			// Screenshots (binary → polar-assets via SDK; row holds asset_id + phash).
+			auth.POST("/movies/:id/screenshots", p.handleScreenshotUpload)
+			auth.GET("/movies/:id/screenshots", p.handleScreenshotList)
+			auth.GET("/screenshots/:scId/url", p.handleScreenshotURL)
+			auth.DELETE("/screenshots/:scId", p.handleScreenshotDelete)
 		}
 	}
 }
