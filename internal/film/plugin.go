@@ -105,6 +105,9 @@ func (p *Plugin) RegisterRoutes(r gin.IRouter) {
 	r.GET("/healthz", p.handleHealthz)
 	r.GET("/metrics", p.handleMetricsExposition)
 
+	// dock→plugin loopback surface (M7): workspace data purge.
+	r.POST("/internal/v1/film/workspace-deleted", p.handleInternalWorkspaceDeleted)
+
 	// /api/film/* — user API. nginx proxies /api/film/* → film-svc. M0 carries
 	// only a _whoami probe to prove the auth chain; movies/people/subtitles/
 	// screenshots/search/analyze land in M1+ under this same group.
@@ -120,6 +123,7 @@ func (p *Plugin) RegisterRoutes(r gin.IRouter) {
 			auth.GET("/movies/:id", p.handleMovieDetail)
 			auth.PATCH("/movies/:id", p.handleMovieUpdate)
 			auth.DELETE("/movies/:id", p.handleMovieDelete)
+			auth.GET("/movies/:id/episodes", p.handleMovieEpisodes) // children (series/podcast)
 
 			// People + cast links.
 			auth.POST("/people", p.handlePersonCreate)
@@ -219,6 +223,7 @@ func (p *Plugin) handleWhoami(c *gin.Context) {
 
 func (p *Plugin) heartbeatLoop(ctx context.Context) {
 	p.beat(ctx)
+	p.metrics.refreshRowGauges(ctx, p.DB)
 	t := time.NewTicker(60 * time.Second)
 	defer t.Stop()
 	for {
@@ -227,6 +232,7 @@ func (p *Plugin) heartbeatLoop(ctx context.Context) {
 			return
 		case <-t.C:
 			p.beat(ctx)
+			p.metrics.refreshRowGauges(ctx, p.DB)
 		}
 	}
 }

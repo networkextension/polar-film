@@ -235,3 +235,17 @@ CREATE TABLE media_embeddings (         -- 电影级
   `/`→film-svc(自带 UI)。**坑**:nginx master 是 **root** 进程,`nginx -s reload` 普通用户 EPERM →
   用 **`sudo -n nginx -s reload`**(dev 有免密 sudo)。`POLAR_FILM_PUBLIC_BASE_URL=https://film.dev.4950.store`
   写进 env → heartbeat 带上,dock nav「影库」tab 指向它。dev film-svc 0.6.0-m6。
+
+**已定(2026-06-08, M7 — 泛化 + 硬化 DONE,polar-film 全部完成):**
+- **泛化**:`media_items.parent_id`(自引用 FK,`film-schema-m7.sql`)→ 同一张表用 (kind, parent_id) 建模
+  movie/episode/doc/podcast 及 series→episode、podcast→episode 层级。create/patch 接受 `parent_id`(校验父存在同 ws);
+  新增 `GET /api/film/movies/:id/episodes` 列子项。
+- **workspace 清理**:`POST /internal/v1/film/workspace-deleted {workspace_id}`,**loopback-only**(同 polar-hosts;
+  dock+film 同机 + nginx 挡 /internal/)。删 media_items(级联 subtitles/segments/screenshots/timeline/links/
+  embeddings/jobs)+ people + tags。**注**:dock 目前没有 workspace 删除 fan-out(它"拒绝删除直到自有表清空",
+  且看不到外部插件库)→ 此端点为未来 fan-out 预留 + 可作 ops 手动清理。
+- **metrics**:`/metrics`(POLAR_FILM_METRICS_TOKEN 门禁)新增 `polar_film_search_total{mode}`、
+  `polar_film_analyze_jobs_total{result}`、`polar_film_embeddings_total{kind}` 计数器 + `polar_film_rows{table}`
+  行数 gauge(每次 heartbeat 刷新)。
+- **部署文档**:新增 `doc/deploy.md`(全量 dev 部署 + pgvector 源码编译/ollama 官方 tarball/nginx sudo reload 等坑)。
+- dev film-svc 0.7.0-m7。**polar-film M0–M7 全部完成并在 dev 验证。**
