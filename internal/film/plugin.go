@@ -157,6 +157,12 @@ func (p *Plugin) RegisterRoutes(r gin.IRouter) {
 			auth.DELETE("/screenshots/:scId", p.handleScreenshotDelete)
 		}
 	}
+
+	// Serve the embedded product UI for non-API paths (NoRoute is on the
+	// engine, so this only wires up when given the *gin.Engine).
+	if eng, ok := r.(*gin.Engine); ok {
+		p.registerWeb(eng)
+	}
 }
 
 func (p *Plugin) Start(ctx context.Context) {
