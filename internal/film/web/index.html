@@ -73,6 +73,8 @@
   #toast{position:fixed;right:16px;bottom:16px;display:flex;flex-direction:column;gap:8px;z-index:50}
   .toast{background:var(--panel2);border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:8px;padding:10px 14px;max-width:380px;box-shadow:0 6px 24px rgba(0,0,0,.4)}
   .toast.err{border-left-color:var(--err)} .toast.ok{border-left-color:var(--ok)}
+  .banner{background:#2a2410;border:1px solid #564a16;color:#f0d98c;padding:12px 14px;border-radius:var(--radius);margin-bottom:16px;display:flex;gap:12px;align-items:center}
+  .banner .grow{flex:1}
   dialog{background:var(--panel);color:var(--txt);border:1px solid var(--line);border-radius:var(--radius);padding:0;max-width:460px;width:92%}
   dialog::backdrop{background:rgba(0,0,0,.55)}
   dialog .hd{padding:13px 16px;border-bottom:1px solid var(--line);font-weight:600}
@@ -172,6 +174,36 @@ function promptToken(){
   if(t!==null){localStorage.setItem(TOKEN_KEY,t.trim());location.reload();}
 }
 
+// accessBanner — shown when the current workspace isn't granted access to the
+// film plugin (403). Admins get a one-click "authorize this workspace" button
+// so they know how to start; others are told to ask an admin.
+function accessBanner(){
+  const isAdmin=state.me&&(state.me.role==="admin"||state.me.site_admin);
+  const wrap=document.createElement("div");wrap.className="banner";
+  const msg=document.createElement("div");msg.className="grow";
+  msg.textContent=`当前工作区未被授权访问「影库」插件(workspace ${state.ws||"—"})。`;
+  wrap.append(msg);
+  if(isAdmin){
+    const b=document.createElement("button");b.className="sm";b.textContent="授权此工作区";
+    b.onclick=async()=>{
+      try{await api("/api/admin/workspace-plugin-access",{method:"PUT",body:{workspace_id:state.ws,plugin:"film",enabled:true}});
+        toast("已授权,加载中…","ok");
+        $("#main").innerHTML='<div class="empty">选择左侧影片,或先搜索。</div>';
+        setTimeout(loadMovies,500);}
+      catch(e){toast("授权失败:"+e.message,"err");}
+    };
+    wrap.append(b);
+  }else{
+    const note=document.createElement("span");note.className="muted";note.textContent="请联系管理员授权。";wrap.append(note);
+  }
+  return wrap;
+}
+// show403 surfaces the access banner in the main pane (and clears the list).
+function show403(){
+  const list=$("#list");if(list)list.innerHTML='<div class="empty">无访问权限</div>';
+  const main=$("#main");main.innerHTML="";main.append(accessBanner());
+}
+
 async function boot(){
   try{state.me=await api("/api/me");}catch(e){return;}
   $("#userBox").innerHTML=`👤 ${esc(state.me.username||"")}`;
@@ -209,7 +241,10 @@ async function loadMovies(){
       d.innerHTML=`<div class="t">${esc(m.title)}</div><div class="m">${m.year||"—"} · ${esc(m.kind||"movie")}</div>`;
       d.onclick=()=>openMovie(m.id);list.append(d);
     });
-  }catch(e){list.innerHTML=`<div class="empty">加载失败:${esc(e.message)}</div>`;}
+  }catch(e){
+    if(e.status===403){show403();return;}
+    list.innerHTML=`<div class="empty">加载失败:${esc(e.message)}</div>`;
+  }
 }
 
 async function doSearch(){
@@ -226,7 +261,10 @@ async function doSearch(){
       d.innerHTML=`<div class="txt">${esc(h.text)}</div><div class="meta"><b>${esc(h.title)}</b><span>${ms2t(h.start_ms)}</span>${score}</div>`;
       d.onclick=()=>openMovie(h.media_id);list.append(d);
     });
-  }catch(e){list.innerHTML=`<div class="empty">搜索失败:${esc(e.message)}</div>`;}
+  }catch(e){
+    if(e.status===403){show403();return;}
+    list.innerHTML=`<div class="empty">搜索失败:${esc(e.message)}</div>`;
+  }
 }
 
 async function createMovie(){
