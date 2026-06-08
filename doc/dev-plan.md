@@ -224,3 +224,14 @@ CREATE TABLE media_embeddings (         -- 电影级
   喂的是**已入库的台词**(M2 segments),summary/tags 写回 + 触发电影向量刷新(M4),timeline 重建 `media_timeline`。
 - **ASR/OCR 仍后置**:流水线只吃 DB 里已有文本,不做语音/画面识别(无 whisper/OCR 依赖)。
 - 思考型模型(kimi-k2.5)给 JSON-only 小任务时,token 预算太低会被推理 token 吃光返回空 → tags 步也用满 `analyzeStepTokens`。
+
+**已定(2026-06-08, M6 — 独立 web UI DONE):**
+- 单文件 `internal/film/web/index.html`(go:embed,零构建、纯 vanilla JS),`web.go` 经 `NoRoute` serve;
+  `/api/*`、`/healthz`、`/metrics`、`/internal/*` 仍走 JSON,其余回落 SPA。覆盖:影片浏览 + 关键词/语义搜台词 +
+  详情(简介/演职/标签/时间轴/字幕分段/截图签名图/相似片)+ AI 分析(选 LLM 配置→轮询 job)+ 上传字幕 + 重建索引。
+- **鉴权**:复用平台 `access_token` cookie(Domain `.4950.store`,跨子域可达);UI 同源 fetch,无 token 时 prompt 粘贴。
+- **nginx 子域 `film.dev.4950.store`**(plugins-dev.conf,镜像 dns 块):`^/api/film(/|$)`→film-svc:8102;
+  `/healthz`、`/metrics`→film-svc;通用 `/api/`→dock:8080(/api/me、/api/teams、/api/llm-configs/available);
+  `/`→film-svc(自带 UI)。**坑**:nginx master 是 **root** 进程,`nginx -s reload` 普通用户 EPERM →
+  用 **`sudo -n nginx -s reload`**(dev 有免密 sudo)。`POLAR_FILM_PUBLIC_BASE_URL=https://film.dev.4950.store`
+  写进 env → heartbeat 带上,dock nav「影库」tab 指向它。dev film-svc 0.6.0-m6。
