@@ -214,3 +214,13 @@ CREATE TABLE media_embeddings (         -- 电影级
 - **ollama**:`brew install ollama`(0.30.6 bottle)**只带 MLX runner,缺 llama-server** → 跑 GGUF 的 bge-m3 报
   "llama-server binary not found"。改用**官方 tarball** `ollama-darwin.tgz`(自带全部 runner),复用已 pull 的
   `~/.ollama/models`(bge-m3 1.1G)。env:`POLAR_FILM_EMBED_BASE_URL=http://127.0.0.1:11434/v1`、`_MODEL=bge-m3`、`_DIM=1024`。
+
+**已定(2026-06-08, M5 — AI 分析流水线 DONE):**
+- **LLM 走 dock 代理**(`POST /internal/v1/llm/chat-completion`,`internal/film/llm.go`);调用方传 `llm_config_id`
+  (用户选 workspace 的 LLM 配置),dock 管 provider 鉴权 + 计费。**坑**:SDK `Dock.Do` 默认 HTTP 超时 15s,LLM
+  补全常 20–60s → film 用**单独的长超时 client**(`dockLLM`,180s),不动 auth/heartbeat 的快超时。
+- **异步任务**:`POST /api/film/movies/:id/analyze {llm_config_id, steps?}` → 建 `analyze_jobs` 行 + goroutine 跑;
+  `GET /analyze/:jobId` 轮询。三步(summary/tags/timeline)**逐步隔离 best-effort**:单步失败/无字幕不影响其它步。
+  喂的是**已入库的台词**(M2 segments),summary/tags 写回 + 触发电影向量刷新(M4),timeline 重建 `media_timeline`。
+- **ASR/OCR 仍后置**:流水线只吃 DB 里已有文本,不做语音/画面识别(无 whisper/OCR 依赖)。
+- 思考型模型(kimi-k2.5)给 JSON-only 小任务时,token 预算太低会被推理 token 吃光返回空 → tags 步也用满 `analyzeStepTokens`。
