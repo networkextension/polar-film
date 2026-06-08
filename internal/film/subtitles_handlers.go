@@ -129,6 +129,7 @@ func (p *Plugin) handleSearch(c *gin.Context) {
 	if mode == "" {
 		mode = "keyword"
 	}
+	p.metrics.incSearch(mode)
 
 	if mode == "semantic" {
 		vecs, err := p.embedder.Embed(ctx, []string{q})

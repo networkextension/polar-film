@@ -145,5 +145,6 @@ func (p *Plugin) runAnalyzeJob(job AnalyzeJob, cfgID int64) {
 	if done == 0 && failed > 0 {
 		final, errText = "failed", "all requested steps failed"
 	}
+	p.metrics.incAnalyze(final)
 	_ = p.updateJobStatus(ctx, job.ID, final, errText)
 }

@@ -95,6 +95,7 @@ func (p *Plugin) embedAndStoreSegments(ctx context.Context, wsID string, ids, te
 			done++
 		}
 	}
+	p.metrics.addEmbed("segment", done)
 	return done, nil
 }
 
@@ -121,6 +122,9 @@ func (p *Plugin) embedMovie(ctx context.Context, wsID, mediaID string) error {
 		ON CONFLICT (media_id) DO UPDATE
 		SET embedding=EXCLUDED.embedding, source_text=EXCLUDED.source_text, updated_at=now()`,
 		mediaID, wsID, vectorLiteral(vecs[0]), src)
+	if err == nil {
+		p.metrics.addEmbed("movie", 1)
+	}
 	return err
 }
 

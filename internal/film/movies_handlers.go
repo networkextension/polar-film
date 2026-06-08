@@ -31,9 +31,10 @@ type createMovieReq struct {
 	RuntimeMin    *int   `json:"runtime_min"`
 	Summary       string `json:"summary"`
 	PosterAssetID string `json:"poster_asset_id"`
-	ImdbID        string `json:"imdb_id"`
-	DoubanID      string `json:"douban_id"`
-	TmdbID        string `json:"tmdb_id"`
+	ImdbID        string  `json:"imdb_id"`
+	DoubanID      string  `json:"douban_id"`
+	TmdbID        string  `json:"tmdb_id"`
+	ParentID      *string `json:"parent_id"`
 }
 
 type updateMovieReq struct {
@@ -49,6 +50,7 @@ type updateMovieReq struct {
 	ImdbID        *string `json:"imdb_id"`
 	DoubanID      *string `json:"douban_id"`
 	TmdbID        *string `json:"tmdb_id"`
+	ParentID      *string `json:"parent_id"`
 }
 
 // applyMoviePatch overlays provided (non-nil) fields onto cur. Pure — tested.
@@ -89,6 +91,9 @@ func applyMoviePatch(cur Movie, req updateMovieReq) Movie {
 	if req.TmdbID != nil {
 		cur.TmdbID = *req.TmdbID
 	}
+	if req.ParentID != nil {
+		cur.ParentID = scanStrPtr(sql.NullString{String: *req.ParentID, Valid: true})
+	}
 	return cur
 }
 
@@ -111,11 +116,20 @@ func (p *Plugin) handleMovieCreate(c *gin.Context) {
 	if kind == "" {
 		kind = "movie"
 	}
+	if req.ParentID != nil && strings.TrimSpace(*req.ParentID) != "" {
+		if _, err := p.getMovie(ctx, wsID, strings.TrimSpace(*req.ParentID)); errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "parent_id not found in this workspace"})
+			return
+		} else if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	}
 	m := Movie{
 		ID: newID("mv_"), WorkspaceID: wsID, Kind: kind, Title: req.Title,
 		OriginalTitle: req.OriginalTitle, Year: req.Year, Country: req.Country, Language: req.Language,
 		RuntimeMin: req.RuntimeMin, Summary: req.Summary, PosterAssetID: req.PosterAssetID,
-		ImdbID: req.ImdbID, DoubanID: req.DoubanID, TmdbID: req.TmdbID, CreatedBy: userID,
+		ImdbID: req.ImdbID, DoubanID: req.DoubanID, TmdbID: req.TmdbID, ParentID: req.ParentID, CreatedBy: userID,
 	}
 	if err := p.insertMovie(ctx, m); err != nil {
 		if isUniqueViolation(err) {
@@ -188,6 +202,26 @@ func (p *Plugin) handleMovieUpdate(c *gin.Context) {
 	}
 	p.embedMovieBestEffort(ctx, wsID, upd.ID)
 	c.JSON(http.StatusOK, p.fillMovie(ctx, upd))
+}
+
+// handleMovieEpisodes lists the children (episodes) of a series/show item.
+func (p *Plugin) handleMovieEpisodes(c *gin.Context) {
+	ctx := c.Request.Context()
+	wsID := c.GetString(ctxKeyWorkspaceID)
+	id := strings.TrimSpace(c.Param("id"))
+	if _, err := p.getMovie(ctx, wsID, id); errors.Is(err, sql.ErrNoRows) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "movie not found"})
+		return
+	} else if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	kids, err := p.listChildren(ctx, wsID, id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"parent_id": id, "episodes": kids})
 }
 
 func (p *Plugin) handleMovieDelete(c *gin.Context) {
