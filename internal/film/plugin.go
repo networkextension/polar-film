@@ -34,7 +34,8 @@ type Plugin struct {
 	MetricsTok string
 	PublicURL  string // externally reachable origin, sent on heartbeat
 
-	embedder  Embedder // M4 semantic search backend (ollama / offline fallback)
+	dockLLM   *sdk.Client // M5: separate client w/ long timeout for LLM completions
+	embedder  Embedder    // M4 semantic search backend (ollama / offline fallback)
 	metrics   *filmMetrics
 	startedAt time.Time
 }
@@ -69,6 +70,11 @@ func New(ctx context.Context, cfg Config) (*Plugin, error) {
 	}
 
 	dock := sdk.NewClient(cfg.DockBase, cfg.PluginName, sdk.DeriveHMACKey(cfg.PluginToken))
+	// LLM completions (M5) routinely run 20–60s — well past the SDK's 15s
+	// default. A dedicated client keeps auth/heartbeat fast while the
+	// analyze pipeline gets the headroom it needs.
+	dockLLM := sdk.NewClient(cfg.DockBase, cfg.PluginName, sdk.DeriveHMACKey(cfg.PluginToken))
+	dockLLM.HTTP = &http.Client{Timeout: 180 * time.Second}
 	resp, err := dock.Do(http.MethodGet, "/internal/v1/ping", nil)
 	if err != nil {
 		_ = db.Close()
@@ -88,6 +94,7 @@ func New(ctx context.Context, cfg Config) (*Plugin, error) {
 		Ver:        cfg.BuildVersion,
 		MetricsTok: cfg.MetricsToken,
 		PublicURL:  strings.TrimRight(strings.TrimSpace(cfg.PublicBaseURL), "/"),
+		dockLLM:    dockLLM,
 		embedder:   newEmbedder(cfg),
 		metrics:    newFilmMetrics(),
 		startedAt:  time.Now(),
@@ -136,6 +143,12 @@ func (p *Plugin) RegisterRoutes(r gin.IRouter) {
 			// Semantic layer (M4): vector backfill + "相似片".
 			auth.POST("/reindex", p.handleReindex)
 			auth.GET("/movies/:id/similar", p.handleSimilarMovies)
+
+			// AI analysis pipeline (M5): async LLM summary/tags/timeline over台词.
+			auth.POST("/movies/:id/analyze", p.handleAnalyzeStart)
+			auth.GET("/movies/:id/analyze", p.handleAnalyzeLatest)
+			auth.GET("/analyze/:jobId", p.handleAnalyzeJobGet)
+			auth.GET("/movies/:id/timeline", p.handleTimelineList)
 
 			// Screenshots (binary → polar-assets via SDK; row holds asset_id + phash).
 			auth.POST("/movies/:id/screenshots", p.handleScreenshotUpload)
