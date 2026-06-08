@@ -6,11 +6,20 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 )
+
+// embedMovieBestEffort refreshes a movie's vector without failing the
+// request — a down embedder just leaves the row unembedded for reindex.
+func (p *Plugin) embedMovieBestEffort(ctx context.Context, wsID, mediaID string) {
+	if err := p.embedMovie(ctx, wsID, mediaID); err != nil {
+		log.Printf("film: embed movie %s failed (search degrades to keyword): %v", mediaID, err)
+	}
+}
 
 type createMovieReq struct {
 	Kind          string `json:"kind"`
@@ -116,6 +125,7 @@ func (p *Plugin) handleMovieCreate(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	p.embedMovieBestEffort(ctx, wsID, m.ID)
 	c.JSON(http.StatusCreated, p.fillMovie(ctx, m))
 }
 
@@ -176,6 +186,7 @@ func (p *Plugin) handleMovieUpdate(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	p.embedMovieBestEffort(ctx, wsID, upd.ID)
 	c.JSON(http.StatusOK, p.fillMovie(ctx, upd))
 }
 

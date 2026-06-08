@@ -200,6 +200,17 @@ CREATE TABLE media_embeddings (         -- 电影级
 5. **ASR/OCR**:**后置 M5**;MVP 只吃已上传字幕。
 6. **UI**:**独立产品级 `web/`**(go:embed,同 polar-dns)。
 
-**待拍板(M4 前定即可,不挡 M0–M3):**
-3. **嵌入模型 / 向量维度**:平台是否有现成 embedding 端点?没有则自部署(bge-m3 / gte,中文友好)或调外部 API。
-   定下模型才能定 `vector(N)`(schema 里暂写 `vector(1024)` 占位,按所选模型改)。
+**已定(2026-06-07, M4):**
+3. **嵌入模型 / 向量维度**:**ollama bge-m3,1024 维**(中文强、零 API key、零花钱)。后端经
+   `Embedder` 接口抽象(`internal/film/embed.go`):OpenAI 兼容 `httpEmbedder` 通吃 ollama / DashScope /
+   OpenAI,空 `POLAR_FILM_EMBED_BASE_URL` 时退化为确定性 `hashEmbedder`(rune-bigram,非语义,仅打通管线 + 测试)。
+   维度定为 **1024**(bge-m3 / DashScope text-embedding-v3 / OpenAI text-embedding-3-* dims=1024 都对齐)。
+
+**M4 dev 部署坑(记录,redeploy 必看):**
+- **pgvector**:dev 是 **postgresql@16**,但 `brew install pgvector` 的 bottle 只含 pg17/18 → 必须**从源码编译**:
+  `git clone --branch v0.8.2 pgvector && make install PG_CONFIG=/opt/homebrew/opt/postgresql@16/bin/pg_config`。
+  `CREATE EXTENSION vector` 需 **superuser**(polar 角色不行)→ 先以默认超级用户建扩展,其余 ALTER/CREATE 以 polar 跑。
+  ⚠️ 若 brew 升级/重装 postgresql@16,源码装的 `vector.dylib` 会被清掉,需重编。
+- **ollama**:`brew install ollama`(0.30.6 bottle)**只带 MLX runner,缺 llama-server** → 跑 GGUF 的 bge-m3 报
+  "llama-server binary not found"。改用**官方 tarball** `ollama-darwin.tgz`(自带全部 runner),复用已 pull 的
+  `~/.ollama/models`(bge-m3 1.1G)。env:`POLAR_FILM_EMBED_BASE_URL=http://127.0.0.1:11434/v1`、`_MODEL=bge-m3`、`_DIM=1024`。

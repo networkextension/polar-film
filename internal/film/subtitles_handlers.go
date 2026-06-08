@@ -11,6 +11,7 @@ package film
 import (
 	"database/sql"
 	"errors"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -59,7 +60,13 @@ func (p *Plugin) handleSubtitleUpload(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusCreated, gin.H{"subtitle": s, "segments": len(cues)})
+	// Best-effort semantic indexing: segments stay keyword-searchable even
+	// if the embedder is down; reindex backfills NULLs later.
+	embedded, eerr := p.embedSegments(ctx, wsID, s.ID)
+	if eerr != nil {
+		log.Printf("film: embed segments for %s failed (keyword search still works): %v", s.ID, eerr)
+	}
+	c.JSON(http.StatusCreated, gin.H{"subtitle": s, "segments": len(cues), "embedded": embedded})
 }
 
 func (p *Plugin) handleSubtitleList(c *gin.Context) {
@@ -100,9 +107,11 @@ func (p *Plugin) handleSubtitleDelete(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"deleted": true})
 }
 
-// handleSearch — M2 keyword (台词) search over subtitle segments. Vector /
-// screenshot search arrive in M4+.
+// handleSearch searches subtitle segments. mode=keyword (default) is the
+// M2 台词 substring match; mode=semantic embeds the query and runs a
+// pgvector cosine kNN (M4). Both return SearchHit; semantic adds a score.
 func (p *Plugin) handleSearch(c *gin.Context) {
+	ctx := c.Request.Context()
 	wsID := c.GetString(ctxKeyWorkspaceID)
 	q := strings.TrimSpace(c.Query("q"))
 	if q == "" {
@@ -115,10 +124,90 @@ func (p *Plugin) handleSearch(c *gin.Context) {
 			limit = n
 		}
 	}
-	hits, err := p.searchSegments(c.Request.Context(), wsID, q, strings.TrimSpace(c.Query("media_id")), limit)
+	mediaID := strings.TrimSpace(c.Query("media_id"))
+	mode := strings.ToLower(strings.TrimSpace(c.Query("mode")))
+	if mode == "" {
+		mode = "keyword"
+	}
+
+	if mode == "semantic" {
+		vecs, err := p.embedder.Embed(ctx, []string{q})
+		if err != nil || len(vecs) != 1 {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "embed query failed: " + errString(err)})
+			return
+		}
+		hits, err := p.semanticSearchSegments(ctx, wsID, vecs[0], mediaID, limit)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"kind": "subtitle", "mode": "semantic", "query": q, "hits": hits})
+		return
+	}
+
+	hits, err := p.searchSegments(ctx, wsID, q, mediaID, limit)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"kind": "subtitle", "query": q, "hits": hits})
+	c.JSON(http.StatusOK, gin.H{"kind": "subtitle", "mode": "keyword", "query": q, "hits": hits})
+}
+
+func errString(err error) string {
+	if err == nil {
+		return "empty embedding result"
+	}
+	return err.Error()
+}
+
+// handleReindex backfills embeddings for segments and movies in the caller's
+// workspace that don't have one yet (e.g. data created before M4, or while
+// the embedder was down). Idempotent.
+func (p *Plugin) handleReindex(c *gin.Context) {
+	ctx := c.Request.Context()
+	wsID := c.GetString(ctxKeyWorkspaceID)
+	limit := 0
+	if v := strings.TrimSpace(c.Query("limit")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			limit = n
+		}
+	}
+	segs, err := p.embedPendingSegments(ctx, wsID, limit)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "embed segments: " + err.Error(), "segments_embedded": segs})
+		return
+	}
+	movies, err := p.embedPendingMovies(ctx, wsID, limit)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "embed movies: " + err.Error(), "segments_embedded": segs, "movies_embedded": movies})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"segments_embedded": segs, "movies_embedded": movies, "embedder": p.embedder.Name()})
+}
+
+// handleSimilarMovies returns movies nearest to :id by movie-level
+// embedding cosine ("相似片").
+func (p *Plugin) handleSimilarMovies(c *gin.Context) {
+	ctx := c.Request.Context()
+	wsID := c.GetString(ctxKeyWorkspaceID)
+	id := strings.TrimSpace(c.Param("id"))
+	if _, err := p.getMovie(ctx, wsID, id); errors.Is(err, sql.ErrNoRows) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "movie not found"})
+		return
+	} else if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	limit := 0
+	if v := strings.TrimSpace(c.Query("limit")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			limit = n
+		}
+	}
+	out, err := p.similarMovies(ctx, wsID, id, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"media_id": id, "similar": out})
 }
