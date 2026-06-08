@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -29,6 +30,10 @@ func main() {
 		BuildVersion:  envOrDefault("POLAR_FILM_VERSION", "0.0.1"),
 		MetricsToken:  os.Getenv("POLAR_FILM_METRICS_TOKEN"),
 		PublicBaseURL: os.Getenv("POLAR_FILM_PUBLIC_BASE_URL"),
+		EmbedBaseURL:  os.Getenv("POLAR_FILM_EMBED_BASE_URL"),
+		EmbedModel:    envOrDefault("POLAR_FILM_EMBED_MODEL", "bge-m3"),
+		EmbedDim:      envIntOrDefault("POLAR_FILM_EMBED_DIM", 1024),
+		EmbedAPIKey:   os.Getenv("POLAR_FILM_EMBED_API_KEY"),
 	}
 	if strings.TrimSpace(cfg.PluginToken) == "" {
 		log.Fatal("POLAR_PLUGIN_TOKEN unset — get plaintext from /admin-plugins.html")
@@ -73,4 +78,13 @@ func envOrDefault(key, fallback string) string {
 		return fallback
 	}
 	return v
+}
+
+func envIntOrDefault(key string, fallback int) int {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return fallback
 }

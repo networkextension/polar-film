@@ -34,6 +34,7 @@ type Plugin struct {
 	MetricsTok string
 	PublicURL  string // externally reachable origin, sent on heartbeat
 
+	embedder  Embedder // M4 semantic search backend (ollama / offline fallback)
 	metrics   *filmMetrics
 	startedAt time.Time
 }
@@ -87,6 +88,7 @@ func New(ctx context.Context, cfg Config) (*Plugin, error) {
 		Ver:        cfg.BuildVersion,
 		MetricsTok: cfg.MetricsToken,
 		PublicURL:  strings.TrimRight(strings.TrimSpace(cfg.PublicBaseURL), "/"),
+		embedder:   newEmbedder(cfg),
 		metrics:    newFilmMetrics(),
 		startedAt:  time.Now(),
 	}, nil
@@ -129,7 +131,11 @@ func (p *Plugin) RegisterRoutes(r gin.IRouter) {
 			auth.GET("/movies/:id/subtitles", p.handleSubtitleList)
 			auth.GET("/subtitles/:subId/segments", p.handleSubtitleSegments)
 			auth.DELETE("/subtitles/:subId", p.handleSubtitleDelete)
-			auth.GET("/search", p.handleSearch)
+			auth.GET("/search", p.handleSearch) // ?mode=keyword|semantic
+
+			// Semantic layer (M4): vector backfill + "相似片".
+			auth.POST("/reindex", p.handleReindex)
+			auth.GET("/movies/:id/similar", p.handleSimilarMovies)
 
 			// Screenshots (binary → polar-assets via SDK; row holds asset_id + phash).
 			auth.POST("/movies/:id/screenshots", p.handleScreenshotUpload)

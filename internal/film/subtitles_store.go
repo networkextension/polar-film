@@ -34,6 +34,10 @@ type SearchHit struct {
 	StartMs   int    `json:"start_ms"`
 	EndMs     int    `json:"end_ms"`
 	Text      string `json:"text"`
+	// Score is the cosine similarity (0..1) for semantic hits; nil (and
+	// omitted) for keyword (台词 substring) results. A pointer so a real
+	// 0.0 similarity still serializes.
+	Score *float64 `json:"score,omitempty"`
 }
 
 // insertSubtitleWithSegments writes the subtitle + all its segments in one

@@ -38,6 +38,10 @@ curl -s localhost:8102/healthz
 | `POLAR_FILM_VERSION` | `0.0.1` | surfaced on heartbeat + `/healthz` |
 | `POLAR_FILM_METRICS_TOKEN` | — | Bearer for `/metrics` (unset → 404) |
 | `POLAR_FILM_PUBLIC_BASE_URL` | — | origin for the dock `/api/nav` sidebar link |
+| `POLAR_FILM_EMBED_BASE_URL` | — | OpenAI-compatible `/v1` base for embeddings (M4). Empty → offline deterministic fallback (non-semantic). Dev: `http://127.0.0.1:11434/v1` (ollama) |
+| `POLAR_FILM_EMBED_MODEL` | `bge-m3` | embedding model name |
+| `POLAR_FILM_EMBED_DIM` | `1024` | must match the `vector(N)` schema |
+| `POLAR_FILM_EMBED_API_KEY` | — | optional bearer (ollama ignores; set for DashScope/OpenAI) |
 
 ## Build / test
 
