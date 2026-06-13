@@ -12,7 +12,9 @@ import CoreGraphics
 enum Fuse {
     static let framesPerSegment = 6
 
-    static func run(videoURL: URL, transcript: Transcript) async throws -> Transcript {
+    static func run(videoURL: URL, outDir: URL, transcript: Transcript) async throws -> Transcript {
+        let speakersDir = outDir.appendingPathComponent("speakers", isDirectory: true)
+        try? FileManager.default.createDirectory(at: speakersDir, withIntermediateDirectories: true)
         let asset = AVURLAsset(url: videoURL)
         let gen = AVAssetImageGenerator(asset: asset)
         gen.appliesPreferredTrackTransform = true
@@ -56,7 +58,13 @@ enum Fuse {
             // (Cross-cut re-identification wants ArcFace — see design doc.)
             var cluster = -1
             if let crop = active.last.crop, let fp = featurePrint(crop) {
+                let before = speakers.count
                 cluster = assignSpeaker(fp: fp, center: active.center, into: &speakers)
+                // Save a representative face thumbnail the first time we see a
+                // speaker → spk0.jpg/spk1.jpg/… (basis for naming in P3).
+                if cluster == before {
+                    try? Keyframes.writeJPEG(crop, to: speakersDir.appendingPathComponent("spk\(cluster).jpg"))
+                }
             }
             out[i].speakerKey = cluster >= 0 ? "spk\(cluster)" : "spk?"
             out[i].speakerConf = min(1.0, active.motion * 8.0)  // rough confidence
