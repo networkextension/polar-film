@@ -1,0 +1,5 @@
+.build/
+.swiftpm/
+*.xcodeproj
+wk-models/
+*.filmscan/
