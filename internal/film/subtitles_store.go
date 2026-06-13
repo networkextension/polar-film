@@ -56,10 +56,12 @@ func (p *Plugin) insertSubtitleWithSegments(ctx context.Context, s Subtitle, cue
 		return err
 	}
 	for _, cu := range cues {
+		// speaker_key carries filmscan's "[Name]"/"spkN" attribution when the
+		// cue had one; NULL (via NULLIF) for ordinary subtitles.
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO subtitle_segments (id, workspace_id, subtitle_id, media_id, idx, start_ms, end_ms, text)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-			newID("seg_"), s.WorkspaceID, s.ID, s.MediaID, cu.Idx, cu.StartMs, cu.EndMs, cu.Text); err != nil {
+			INSERT INTO subtitle_segments (id, workspace_id, subtitle_id, media_id, idx, start_ms, end_ms, text, speaker_key)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8, NULLIF($9,''))`,
+			newID("seg_"), s.WorkspaceID, s.ID, s.MediaID, cu.Idx, cu.StartMs, cu.EndMs, cu.Text, cu.Speaker); err != nil {
 			return err
 		}
 	}
