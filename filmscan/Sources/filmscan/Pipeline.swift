@@ -68,7 +68,7 @@ struct Pipeline {
                 final = cached
             } else {
                 log("fuse: visual active-speaker attribution …")
-                let f = try await Fuse.run(videoURL: videoURL, transcript: t)
+                let f = try await Fuse.run(videoURL: videoURL, outDir: outDir, transcript: t)
                 try saveJSON(f, to: fusedURL)
                 let n = f.segments.filter { !$0.speakerKey.isEmpty }.count
                 log("fuse: \(n)/\(f.segments.count) lines attributed to a speaker")
