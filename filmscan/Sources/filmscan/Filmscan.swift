@@ -1,0 +1,14 @@
+import ArgumentParser
+import Foundation
+
+// filmscan — produce speaker-attributed subtitles + keyframes from a video.
+// See doc/speaker-subtitles.md. P0 = transcribe → SRT/JSON.
+@main
+struct Filmscan: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "filmscan",
+        abstract: "Apple-native video analyzer for polar-film: speaker-attributed subtitles + keyframes.",
+        subcommands: [Analyze.self, Label.self],
+        defaultSubcommand: Analyze.self
+    )
+}
