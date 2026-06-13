@@ -13,8 +13,22 @@ struct Pipeline {
     var modelFolder: String? = nil
     var frameIntervalSec: Double = 2.0
     var compute: String = "default"
+    var diarize: Bool = true
+    var diarModels: String? = nil
 
     func run() async throws {
+        // 16 kHz mono audio is needed by both transcribe and diarize; decode once,
+        // on demand (skipped entirely when both their artifacts are cached).
+        var samplesCache: [Float]? = nil
+        func loadSamples() async throws -> [Float] {
+            if let s = samplesCache { return s }
+            log("demux: decoding audio → 16kHz mono …")
+            let s = try await Demux.audioSamples16k(videoURL: videoURL)
+            log("demux: \(s.count) samples (~\(s.count / 16000)s)")
+            samplesCache = s
+            return s
+        }
+
         // ── keyframes (offline) ─────────────────────────────────────
         let framesURL = outDir.appendingPathComponent("frames.json")
         let frames: Frames
@@ -46,9 +60,7 @@ struct Pipeline {
             log("transcribe: cached (\(t.segments.count) segments)")
         } else {
             do {
-                log("demux: decoding audio → 16kHz mono …")
-                let samples = try await Demux.audioSamples16k(videoURL: videoURL)
-                log("demux: \(samples.count) samples (~\(samples.count / 16000)s)")
+                let samples = try await loadSamples()
                 log("transcribe: WhisperKit \(model) …")
                 let t = try await Transcribe.run(videoURL: videoURL, samples: samples, lang: lang, model: model, modelFolder: modelFolder, compute: compute)
                 try saveJSON(t, to: transcriptURL)
@@ -59,7 +71,29 @@ struct Pipeline {
             }
         }
 
-        // ── fuse: visual active-speaker → per-line attribution ──────
+        // ── diarize (audio "who-spoke-when"; needs FluidAudio models; tolerant) ──
+        var audioTurns: [AudioTurn] = []
+        if diarize, transcript != nil {
+            let diarURL = outDir.appendingPathComponent("diarize.json")
+            if let cached = try? loadJSON(Diarization.self, from: diarURL) {
+                log("diarize: cached (\(cached.turns.count) turns)")
+                audioTurns = cached.turns
+            } else {
+                do {
+                    let samples = try await loadSamples()
+                    log("diarize: FluidAudio …")
+                    let turns = try await Diarize.run(samples: samples, modelsDir: diarModels, compute: compute)
+                    try saveJSON(Diarization(turns: turns), to: diarURL)
+                    let speakers = Set(turns.map { $0.speaker }).count
+                    log("diarize: \(turns.count) turns / \(speakers) speakers")
+                    audioTurns = turns
+                } catch {
+                    log("diarize: FAILED (\(error.localizedDescription)) — visual-only fusion.")
+                }
+            }
+        }
+
+        // ── fuse: audio backbone × visual active-speaker → per-line attribution ──
         var final = transcript
         if let t = transcript {
             let fusedURL = outDir.appendingPathComponent("fused.json")
@@ -67,8 +101,8 @@ struct Pipeline {
                 log("fuse: cached")
                 final = cached
             } else {
-                log("fuse: visual active-speaker attribution …")
-                let f = try await Fuse.run(videoURL: videoURL, outDir: outDir, transcript: t)
+                log("fuse: \(audioTurns.isEmpty ? "visual-only" : "audio+visual") attribution …")
+                let f = try await Fuse.run(videoURL: videoURL, outDir: outDir, transcript: t, audioTurns: audioTurns)
                 try saveJSON(f, to: fusedURL)
                 let n = f.segments.filter { !$0.speakerKey.isEmpty }.count
                 log("fuse: \(n)/\(f.segments.count) lines attributed to a speaker")
