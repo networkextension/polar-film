@@ -19,11 +19,14 @@ type Subtitle struct {
 }
 
 type Segment struct {
-	ID      string `json:"id"`
-	Idx     int    `json:"idx"`
-	StartMs int    `json:"start_ms"`
-	EndMs   int    `json:"end_ms"`
-	Text    string `json:"text"`
+	ID         string `json:"id"`
+	Idx        int    `json:"idx"`
+	StartMs    int    `json:"start_ms"`
+	EndMs      int    `json:"end_ms"`
+	Text       string `json:"text"`
+	SpeakerKey string `json:"speaker_key,omitempty"` // filmscan attribution tag
+	PersonID   string `json:"person_id,omitempty"`   // resolved people.id
+	Speaker    string `json:"speaker,omitempty"`     // resolved person name
 }
 
 // SearchHit is one台词 match (segment joined with its media title).
@@ -55,13 +58,28 @@ func (p *Plugin) insertSubtitleWithSegments(ctx context.Context, s Subtitle, cue
 		s.ID, s.WorkspaceID, s.MediaID, s.Lang, s.Format, s.Source); err != nil {
 		return err
 	}
+	people := map[string]string{} // speaker name → person id (resolved once per file)
 	for _, cu := range cues {
+		// A named speaker ("Darcy") resolves to a people row → person_id; the
+		// anonymous cluster ids ("spk0") stay as speaker_key text only.
+		var personID string
+		if !isAnonymousSpeaker(cu.Speaker) {
+			pid, ok := people[cu.Speaker]
+			if !ok {
+				var err error
+				if pid, err = p.ensurePersonTx(ctx, tx, s.WorkspaceID, cu.Speaker); err != nil {
+					return err
+				}
+				people[cu.Speaker] = pid
+			}
+			personID = pid
+		}
 		// speaker_key carries filmscan's "[Name]"/"spkN" attribution when the
-		// cue had one; NULL (via NULLIF) for ordinary subtitles.
+		// cue had one; both columns NULL (via NULLIF) for ordinary subtitles.
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO subtitle_segments (id, workspace_id, subtitle_id, media_id, idx, start_ms, end_ms, text, speaker_key)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8, NULLIF($9,''))`,
-			newID("seg_"), s.WorkspaceID, s.ID, s.MediaID, cu.Idx, cu.StartMs, cu.EndMs, cu.Text, cu.Speaker); err != nil {
+			INSERT INTO subtitle_segments (id, workspace_id, subtitle_id, media_id, idx, start_ms, end_ms, text, speaker_key, person_id)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8, NULLIF($9,''), NULLIF($10,''))`,
+			newID("seg_"), s.WorkspaceID, s.ID, s.MediaID, cu.Idx, cu.StartMs, cu.EndMs, cu.Text, cu.Speaker, personID); err != nil {
 			return err
 		}
 	}
@@ -90,8 +108,11 @@ func (p *Plugin) listSubtitles(ctx context.Context, wsID, mediaID string) ([]Sub
 // listSegments returns a subtitle's segments (workspace-scoped via the join).
 func (p *Plugin) listSegments(ctx context.Context, wsID, subtitleID string) ([]Segment, error) {
 	rows, err := p.DB.QueryContext(ctx, `
-		SELECT id, idx, start_ms, end_ms, text FROM subtitle_segments
-		WHERE workspace_id=$1 AND subtitle_id=$2 ORDER BY start_ms`, wsID, subtitleID)
+		SELECT s.id, s.idx, s.start_ms, s.end_ms, s.text,
+		       COALESCE(s.speaker_key,''), COALESCE(s.person_id,''), COALESCE(pe.name,'')
+		FROM subtitle_segments s
+		LEFT JOIN people pe ON pe.id = s.person_id
+		WHERE s.workspace_id=$1 AND s.subtitle_id=$2 ORDER BY s.start_ms`, wsID, subtitleID)
 	if err != nil {
 		return nil, err
 	}
@@ -99,7 +120,8 @@ func (p *Plugin) listSegments(ctx context.Context, wsID, subtitleID string) ([]S
 	out := []Segment{}
 	for rows.Next() {
 		var s Segment
-		if err := rows.Scan(&s.ID, &s.Idx, &s.StartMs, &s.EndMs, &s.Text); err != nil {
+		if err := rows.Scan(&s.ID, &s.Idx, &s.StartMs, &s.EndMs, &s.Text,
+			&s.SpeakerKey, &s.PersonID, &s.Speaker); err != nil {
 			return nil, err
 		}
 		out = append(out, s)

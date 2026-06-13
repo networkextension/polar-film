@@ -6,9 +6,20 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"regexp"
 
 	"github.com/lib/pq"
 )
+
+// anonSpeakerRe matches filmscan's un-named cluster ids ("spk0", "spk12").
+var anonSpeakerRe = regexp.MustCompile(`^spk\d+$`)
+
+// isAnonymousSpeaker reports whether a subtitle's speaker_key is an anonymous
+// filmscan cluster id rather than a real name. Anonymous keys ("", "spk?",
+// "spk0", …) are kept as plain text only; named speakers get a people row.
+func isAnonymousSpeaker(key string) bool {
+	return key == "" || key == "spk?" || anonSpeakerRe.MatchString(key)
+}
 
 // newID mints a prefixed, random TEXT id (e.g. mv_<32hex>), matching the
 // platform convention of domain-prefixed string ids.

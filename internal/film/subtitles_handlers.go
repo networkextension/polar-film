@@ -183,7 +183,13 @@ func (p *Plugin) handleReindex(c *gin.Context) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "embed movies: " + err.Error(), "segments_embedded": segs, "movies_embedded": movies})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"segments_embedded": segs, "movies_embedded": movies, "embedder": p.embedder.Name()})
+	// Backfill person_id for named-speaker segments ingested before P4b.
+	speakers, err := p.resolveSpeakersForWorkspace(ctx, wsID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "resolve speakers: " + err.Error(), "segments_embedded": segs, "movies_embedded": movies, "speakers_resolved": speakers})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"segments_embedded": segs, "movies_embedded": movies, "speakers_resolved": speakers, "embedder": p.embedder.Name()})
 }
 
 // handleSimilarMovies returns movies nearest to :id by movie-level

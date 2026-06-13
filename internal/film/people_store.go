@@ -4,6 +4,7 @@ package film
 
 import (
 	"context"
+	"database/sql"
 	"time"
 )
 
@@ -31,6 +32,74 @@ func (p *Plugin) insertPerson(ctx context.Context, ps Person) error {
 		VALUES ($1,$2,$3,$4,$5, now())`,
 		ps.ID, ps.WorkspaceID, ps.Name, ps.AvatarAssetID, ps.Bio)
 	return err
+}
+
+// ensurePersonTx returns the id of the workspace's person with this name,
+// creating it if absent. Used to resolve a subtitle's named speaker (e.g.
+// "Darcy") to a stable person id; runs inside the subtitle-ingest tx.
+func (p *Plugin) ensurePersonTx(ctx context.Context, tx *sql.Tx, wsID, name string) (string, error) {
+	var id string
+	// DO UPDATE (not DO NOTHING) so RETURNING fires on an existing row too.
+	err := tx.QueryRowContext(ctx, `
+		INSERT INTO people (id, workspace_id, name)
+		VALUES ($1,$2,$3)
+		ON CONFLICT (workspace_id, name) DO UPDATE SET name=EXCLUDED.name
+		RETURNING id`,
+		newID("pe_"), wsID, name).Scan(&id)
+	return id, err
+}
+
+// resolveSpeakersForWorkspace backfills person_id for segments that carry a
+// named speaker_key but no person yet (data ingested before P4b, or before its
+// speaker was named). Returns the count of segments updated. Idempotent.
+func (p *Plugin) resolveSpeakersForWorkspace(ctx context.Context, wsID string) (int, error) {
+	rows, err := p.DB.QueryContext(ctx, `
+		SELECT DISTINCT speaker_key FROM subtitle_segments
+		WHERE workspace_id=$1 AND speaker_key IS NOT NULL AND person_id IS NULL`, wsID)
+	if err != nil {
+		return 0, err
+	}
+	var names []string
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		if !isAnonymousSpeaker(k) {
+			names = append(names, k)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	updated := 0
+	for _, name := range names {
+		tx, err := p.DB.BeginTx(ctx, nil)
+		if err != nil {
+			return updated, err
+		}
+		pid, err := p.ensurePersonTx(ctx, tx, wsID, name)
+		if err != nil {
+			tx.Rollback() //nolint:errcheck
+			return updated, err
+		}
+		res, err := tx.ExecContext(ctx, `
+			UPDATE subtitle_segments SET person_id=$3
+			WHERE workspace_id=$1 AND speaker_key=$2 AND person_id IS NULL`, wsID, name, pid)
+		if err != nil {
+			tx.Rollback() //nolint:errcheck
+			return updated, err
+		}
+		if err := tx.Commit(); err != nil {
+			return updated, err
+		}
+		n, _ := res.RowsAffected()
+		updated += int(n)
+	}
+	return updated, nil
 }
 
 func (p *Plugin) listPeople(ctx context.Context, wsID string) ([]Person, error) {
