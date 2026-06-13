@@ -6,7 +6,8 @@ enum Emit {
     static func srt(_ t: Transcript, to url: URL) throws {
         var blocks: [String] = []
         for (i, s) in t.segments.enumerated() {
-            let text = s.personID.isEmpty ? s.text : "[\(s.speakerKey)] \(s.text)"
+            let label = s.personID.isEmpty ? s.speakerKey : s.personID
+            let text = label.isEmpty ? s.text : "[\(label)] \(s.text)"
             blocks.append("""
             \(i + 1)
             \(timecode(s.startMs)) --> \(timecode(s.endMs))
