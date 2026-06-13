@@ -14,6 +14,27 @@ type parsedCue struct {
 	StartMs int
 	EndMs   int
 	Text    string
+	Speaker string // filmscan attribution prefix "[Name]", "" if none
+}
+
+// extractSpeaker peels a leading "[Name] " speaker tag (as emitted by
+// `filmscan`, e.g. "[Darcy] You must allow me…") off the first line of a cue,
+// returning the speaker and the text without the tag. A bare "[…]" with no
+// following text, or no leading bracket, leaves the text untouched.
+func extractSpeaker(text string) (speaker, rest string) {
+	if len(text) == 0 || text[0] != '[' {
+		return "", text
+	}
+	close := strings.IndexByte(text, ']')
+	if close <= 1 { // "[" with no name, or "[]"
+		return "", text
+	}
+	name := strings.TrimSpace(text[1:close])
+	rest = strings.TrimLeft(text[close+1:], " ")
+	if name == "" || rest == "" { // tag-only line: not a speaker prefix
+		return "", text
+	}
+	return name, rest
 }
 
 // parseTimecode parses "HH:MM:SS,mmm" / "HH:MM:SS.mmm" / "MM:SS.mmm" / "SS"
@@ -109,7 +130,8 @@ func parseCues(content string) []parsedCue {
 		if text == "" {
 			continue
 		}
-		cues = append(cues, parsedCue{Idx: len(cues) + 1, StartMs: start, EndMs: end, Text: text})
+		speaker, text := extractSpeaker(text)
+		cues = append(cues, parsedCue{Idx: len(cues) + 1, StartMs: start, EndMs: end, Text: text, Speaker: speaker})
 	}
 	return cues
 }
