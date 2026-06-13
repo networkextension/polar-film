@@ -24,6 +24,12 @@ struct Analyze: AsyncParsableCommand {
     @Option(name: .long, help: "CoreML compute units: default | cpu | cpuAndGPU | cpuAndNeuralEngine | all. Use 'cpu' if transcription comes out garbled (macOS 14.0 ANE bug).")
     var compute: String = "default"
 
+    @Flag(name: .long, inversion: .prefixedNo, help: "Audio speaker diarization to attribute off-screen/voiceover lines. On by default; --no-diarize for visual-only.")
+    var diarize: Bool = true
+
+    @Option(name: .long, help: "Folder with FluidAudio CoreML models (pyannote_segmentation.mlmodelc + wespeaker_v2.mlmodelc); omit to auto-download.")
+    var diarModels: String?
+
     @Option(name: .shortAndLong, help: "Output directory (default: alongside the video).")
     var out: String?
 
@@ -38,7 +44,8 @@ struct Analyze: AsyncParsableCommand {
         try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
 
         let pipeline = Pipeline(videoURL: videoURL, outDir: outDir, lang: lang, model: model,
-                                modelFolder: modelFolder, frameIntervalSec: frameInterval, compute: compute)
+                                modelFolder: modelFolder, frameIntervalSec: frameInterval, compute: compute,
+                                diarize: diarize, diarModels: diarModels)
         try await pipeline.run()
     }
 }

@@ -32,6 +32,23 @@ HF_ENDPOINT=https://hf-mirror.com huggingface-cli download \
 filmscan analyze <video.mp4> --model-folder ~/wk-models/openai_whisper-base.en
 ```
 
+## Diarization (P5) — who spoke when, incl. off-screen
+By default `analyze` also runs audio speaker diarization (FluidAudio CoreML
+pyannote + wespeaker). Audio is the identity **backbone** (survives scene cuts,
+covers off-screen / voiceover lines); the visual active-face names each speaker
+and supplies its thumbnail. With no audio signal it falls back to visual-only.
+```bash
+# offline hosts: pre-fetch the two CoreML models, then point at them
+HF_ENDPOINT=https://hf-mirror.com python3 -c \
+  'from huggingface_hub import snapshot_download; snapshot_download("FluidInference/speaker-diarization-coreml", local_dir="~/diar-models")'
+filmscan analyze <video.mp4> --diar-models ~/diar-models --compute cpu   # cpu: required on macOS 14.0
+filmscan analyze <video.mp4> --no-diarize                                # visual-only
+```
+**macOS 14.0:** the diarization models SIGSEGV on the Neural Engine — pass
+`--compute cpu` (forces CoreML CPU units, same as for WhisperKit). Needs
+**Swift 6 / Xcode 16+** to build (FluidAudio); build on a Swift-6 box and ship
+the prebuilt binary to older hosts (it still targets macOS 14).
+
 ## Name the speakers (P3)
 ```bash
 filmscan label <dir>/<media>.filmscan              # roster: spkN, line count, thumbnail
@@ -56,4 +73,6 @@ multipart, batched). `--no-subtitles` / `--no-screenshots` to send just one.
 - **P2** ✅ **fuse** → visual active-speaker per-line attribution + thumbnails.
 - **P3** ✅ `filmscan label` naming (TMDB cast match later).
 - **P4** wire into polar-film: ✅ `push` client + server `[Speaker]` ingest;
-  remaining: `analyze_jobs` dispatch + audio diarization / ArcFace identity.
+  remaining: `analyze_jobs` dispatch.
+- **P5** ✅ audio diarization (FluidAudio) fused with vision → off-screen/voiceover
+  lines + cross-cut identity. Remaining: ArcFace face identity, expression analysis.

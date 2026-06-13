@@ -72,3 +72,16 @@ struct Faces: Codable {
     var faces: [FaceDet]
     var clusterCount: Int
 }
+
+/// One audio speaker turn (output of the Diarize stage): "who spoke when",
+/// from voice embeddings — independent of what's on screen. Fused with the
+/// visual active-speaker signal to attribute off-screen / voiceover lines.
+struct AudioTurn: Codable, Hashable {
+    var speaker: String   // diarizer cluster id, e.g. "Speaker 1"
+    var startMs: Int
+    var endMs: Int
+}
+
+struct Diarization: Codable {
+    var turns: [AudioTurn]
+}
