@@ -59,14 +59,29 @@ struct Pipeline {
             }
         }
 
-        // ── emit (only if we have a transcript) ─────────────────────
+        // ── fuse: visual active-speaker → per-line attribution ──────
+        var final = transcript
         if let t = transcript {
+            let fusedURL = outDir.appendingPathComponent("fused.json")
+            if let cached = try? loadJSON(Transcript.self, from: fusedURL) {
+                log("fuse: cached")
+                final = cached
+            } else {
+                log("fuse: visual active-speaker attribution …")
+                let f = try await Fuse.run(videoURL: videoURL, transcript: t)
+                try saveJSON(f, to: fusedURL)
+                let n = f.segments.filter { !$0.speakerKey.isEmpty }.count
+                log("fuse: \(n)/\(f.segments.count) lines attributed to a speaker")
+                final = f
+            }
+        }
+
+        // ── emit (only if we have a transcript) ─────────────────────
+        if let t = final {
             let stem = videoURL.deletingPathExtension().lastPathComponent
             let srtURL = outDir.appendingPathComponent("\(stem).srt")
             try Emit.srt(t, to: srtURL)
             log("emit: \(srtURL.path)")
         }
-
-        // P2 : Diarize + Fuse → attribute each subtitle line to a face cluster.
     }
 }
