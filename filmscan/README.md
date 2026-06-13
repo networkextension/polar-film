@@ -32,9 +32,28 @@ HF_ENDPOINT=https://hf-mirror.com huggingface-cli download \
 filmscan analyze <video.mp4> --model-folder ~/wk-models/openai_whisper-base.en
 ```
 
+## Name the speakers (P3)
+```bash
+filmscan label <dir>/<media>.filmscan              # roster: spkN, line count, thumbnail
+filmscan label <dir>/<media>.filmscan --set spk0=Darcy --set spk1=Elizabeth
+```
+Rewrites the SRT so lines read `[Darcy] …`; persists `names.json`.
+
+## Push to polar-film (P4c)
+filmscan is macOS-only, the film service is Linux — so the Mac uploads results
+over the film HTTP API (it doesn't shell out). The server parses the SRT's
+`[Speaker]` tags into segments + people (P4a/P4b).
+```bash
+export FILMSCAN_SERVER=https://film.4950.store FILMSCAN_TOKEN=<bearer>
+filmscan push <dir>/<media>.filmscan --media-id <mv_id> [--workspace-id <ws>]
+```
+Uploads the SRT (→ `/subtitles`) and every keyframe JPEG (→ `/screenshots`,
+multipart, batched). `--no-subtitles` / `--no-screenshots` to send just one.
+
 ## Status
-- **P0** ✅ scaffold + transcribe → SRT/JSON (this).
-- **P1** demux(PCM) + keyframes + faces → face clusters.
-- **P2** diarize + **fuse** → per-line character attribution (the headline).
-- **P3** `filmscan label` naming + TMDB cast match.
-- **P4** wire into polar-film (`analyze_jobs`, assets, `polar_film` upserts).
+- **P0** ✅ scaffold + transcribe → SRT/JSON.
+- **P1** ✅ demux(PCM) + keyframes + faces → face clusters.
+- **P2** ✅ **fuse** → visual active-speaker per-line attribution + thumbnails.
+- **P3** ✅ `filmscan label` naming (TMDB cast match later).
+- **P4** wire into polar-film: ✅ `push` client + server `[Speaker]` ingest;
+  remaining: `analyze_jobs` dispatch + audio diarization / ArcFace identity.
