@@ -21,9 +21,13 @@ type Screenshot struct {
 }
 
 func (p *Plugin) insertScreenshot(ctx context.Context, s Screenshot) error {
+	// ON CONFLICT DO NOTHING makes the direct-upload commit path idempotent
+	// (a retried commit re-sends the same pre-minted sc_ ids); the legacy
+	// multipart path uses fresh ids so it never conflicts.
 	_, err := p.DB.ExecContext(ctx, `
 		INSERT INTO screenshots (id, workspace_id, media_id, ts_ms, asset_id, phash, ocr_text, created_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7, now())`,
+		VALUES ($1,$2,$3,$4,$5,$6,$7, now())
+		ON CONFLICT (id) DO NOTHING`,
 		s.ID, s.WorkspaceID, s.MediaID, nullInt(s.TsMs), s.AssetID, s.Phash, s.OcrText)
 	return err
 }
