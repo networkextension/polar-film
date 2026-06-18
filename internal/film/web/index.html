@@ -82,6 +82,20 @@
   dialog .ft{padding:12px 16px;border-top:1px solid var(--line);display:flex;justify-content:flex-end;gap:8px}
   .hidden{display:none!important}
   .score{font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--ok)}
+  .shots img{cursor:zoom-in;transition:transform .08s,border-color .08s}
+  .shots img:hover{transform:scale(1.04);border-color:var(--accent)}
+  .seg .ts.jump{cursor:pointer;text-decoration:underline dotted}
+  /* frame lightbox */
+  .lb{position:fixed;inset:0;z-index:60;background:rgba(0,0,0,.93);display:flex;align-items:center;justify-content:center}
+  .lb-img{max-width:92vw;max-height:80vh;object-fit:contain;border-radius:6px;background:#000}
+  .lb-nav{position:absolute;top:50%;transform:translateY(-50%);font-size:38px;line-height:1;background:rgba(0,0,0,.45);border:1px solid var(--line);color:#fff;width:54px;height:74px;border-radius:10px;font-weight:400}
+  .lb-nav:hover{background:rgba(0,0,0,.7)} .lb-nav:disabled{opacity:.22;cursor:default}
+  .lb-prev{left:18px} .lb-next{right:18px}
+  .lb-x{position:absolute;top:16px;right:18px;background:rgba(0,0,0,.45);border:1px solid var(--line);color:#fff;width:40px;height:40px;border-radius:8px;font-size:16px}
+  .lb-bar{position:absolute;left:0;right:0;bottom:0;padding:16px 20px 20px;background:linear-gradient(transparent,rgba(0,0,0,.8));display:flex;flex-direction:column;gap:6px;align-items:center;text-align:center}
+  .lb-meta{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--mut)}
+  .lb-cap{font-size:15px;color:var(--txt);max-width:920px;line-height:1.45}
+  .lb-cap b{color:var(--accent);margin-right:6px}
 </style>
 </head>
 <body>
@@ -119,6 +133,17 @@
 
 <div id="toast"></div>
 
+<div id="lightbox" class="lb hidden">
+  <button class="lb-x" id="lbClose" title="关闭 (Esc)">✕</button>
+  <button class="lb-nav lb-prev" id="lbPrev" title="上一张 (←)">‹</button>
+  <img class="lb-img" id="lbImg" alt="frame" />
+  <button class="lb-nav lb-next" id="lbNext" title="下一张 (→)">›</button>
+  <div class="lb-bar">
+    <span class="lb-meta"><span id="lbCount"></span> · <span id="lbTime"></span></span>
+    <span class="lb-cap" id="lbCap"></span>
+  </div>
+</div>
+
 <dialog id="newDlg"><form method="dialog">
   <div class="hd">新建影片</div>
   <div class="bd">
@@ -152,8 +177,69 @@ const esc = s => (s??"").toString().replace(/[&<>"]/g,m=>({"&":"&amp;","<":"&lt;
 const TOKEN_KEY="polar_film_token", WS_KEY="polar_film_ws", CFG_KEY="polar_film_llm_cfg";
 let state={me:null,teams:[],ws:null,movies:[],sel:null,mode:"keyword",llmConfigs:[]};
 
+// ── frame / lightbox state ───────────────────────────────────────────────────
+let currentShots=[];               // current movie's screenshots (time-ordered)
+let currentSubs=[];                // current movie's subtitle list
+const shotUrlCache=new Map();      // scId → signed url (reused by grid + lightbox)
+let thumbIO=null;                  // IntersectionObserver: lazy-resolve thumb urls
+let lbIndex=-1;                    // active frame index in the lightbox
+let lbSegments=null, lbSegPromise=null;  // primary subtitle segments, lazy (for caption)
+
 function toast(msg,kind=""){const t=document.createElement("div");t.className="toast "+kind;t.textContent=msg;$("#toast").append(t);setTimeout(()=>t.remove(),4200);}
 function ms2t(ms){if(ms==null)return"—";const s=Math.floor(ms/1000);return String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0");}
+// ms2hms — HH:MM:SS (drops HH when 0); ms2t is mm:ss only and wrong past 60min.
+function ms2hms(ms){if(ms==null)return"—";let s=Math.floor(ms/1000);const h=Math.floor(s/3600);s-=h*3600;const m=Math.floor(s/60),ss=s%60;const p=n=>String(n).padStart(2,"0");return (h>0?h+":":"")+p(m)+":"+p(ss);}
+
+// resolveShotUrl — cached signed URL for a screenshot (short-lived; re-fetch on use after error).
+async function resolveShotUrl(scId){
+  if(shotUrlCache.has(scId))return shotUrlCache.get(scId);
+  const r=await api(`/api/film/screenshots/${scId}/url`);
+  shotUrlCache.set(scId,r.url);return r.url;
+}
+// ensureSegments — load the primary subtitle's segments once, sorted, for the lightbox caption.
+async function ensureSegments(){
+  if(lbSegments)return lbSegments;
+  if(lbSegPromise)return lbSegPromise;
+  const sub=currentSubs&&currentSubs[0];
+  if(!sub){lbSegments=[];return lbSegments;}
+  lbSegPromise=(async()=>{
+    try{const r=await api(`/api/film/subtitles/${sub.id}/segments`);lbSegments=(r.segments||[]).slice().sort((a,b)=>a.start_ms-b.start_ms);}
+    catch{lbSegments=[];}
+    return lbSegments;
+  })();
+  return lbSegPromise;
+}
+// nearestShotIndex — frame whose ts_ms is closest to a given time (for台词 → frame jumps).
+function nearestShotIndex(ts){
+  let best=-1,bd=Infinity;
+  currentShots.forEach((s,i)=>{if(s.ts_ms==null)return;const d=Math.abs(s.ts_ms-ts);if(d<bd){bd=d;best=i;}});
+  return best;
+}
+
+async function openLightbox(idx){
+  if(idx<0||idx>=currentShots.length)return;
+  lbIndex=idx;$("#lightbox").classList.remove("hidden");await lbRender();
+}
+function closeLightbox(){$("#lightbox").classList.add("hidden");$("#lbImg").removeAttribute("src");}
+function lbNav(d){const n=lbIndex+d;if(n<0||n>=currentShots.length)return;lbIndex=n;lbRender();}
+async function lbRender(){
+  const s=currentShots[lbIndex];if(!s)return;
+  $("#lbCount").textContent=`${lbIndex+1} / ${currentShots.length}`;
+  $("#lbTime").textContent=ms2hms(s.ts_ms);
+  $("#lbPrev").disabled=lbIndex<=0;$("#lbNext").disabled=lbIndex>=currentShots.length-1;
+  try{$("#lbImg").src=await resolveShotUrl(s.id);}catch{shotUrlCache.delete(s.id);}
+  lbCaption(s.ts_ms);
+  [lbIndex-1,lbIndex+1].forEach(i=>{const sc=currentShots[i];if(sc)resolveShotUrl(sc.id).then(u=>{const im=new Image();im.src=u;}).catch(()=>{});});
+}
+// lbCaption — the台词 spoken at this frame's timestamp (exact, else nearest within 5s).
+async function lbCaption(ts){
+  const cap=$("#lbCap");cap.innerHTML="";
+  if(ts==null)return;
+  const segs=await ensureSegments();if(!segs.length)return;
+  let hit=segs.find(s=>ts>=s.start_ms&&ts<=s.end_ms);
+  if(!hit){let bd=Infinity;for(const s of segs){const d=Math.min(Math.abs(ts-s.start_ms),Math.abs(ts-s.end_ms));if(d<bd){bd=d;hit=s;}}if(bd>5000)hit=null;}
+  if(hit)cap.innerHTML=(hit.speaker?`<b>${esc(hit.speaker)}</b>`:"")+esc(hit.text);
+}
 
 async function api(path,opts={}){
   const h=Object.assign({},opts.headers||{});
@@ -222,6 +308,16 @@ async function boot(){
   $("#nSave").onclick=createMovie;
   $("#reindexBtn").onclick=reindex;
   $("#aCancel").onclick=()=>$("#analyzeDlg").close();
+  // lightbox controls (DOM is static; bind once)
+  $("#lbClose").onclick=closeLightbox;
+  $("#lbPrev").onclick=()=>lbNav(-1);
+  $("#lbNext").onclick=()=>lbNav(1);
+  $("#lightbox").addEventListener("click",e=>{if(e.target.id==="lightbox")closeLightbox();});
+  document.addEventListener("keydown",e=>{if($("#lightbox").classList.contains("hidden"))return;
+    if(e.key==="Escape")closeLightbox();else if(e.key==="ArrowLeft")lbNav(-1);else if(e.key==="ArrowRight")lbNav(1);});
+  let lbTouchX=null;
+  $("#lightbox").addEventListener("touchstart",e=>{lbTouchX=e.changedTouches[0].clientX;},{passive:true});
+  $("#lightbox").addEventListener("touchend",e=>{if(lbTouchX==null)return;const dx=e.changedTouches[0].clientX-lbTouchX;lbTouchX=null;if(Math.abs(dx)>40)lbNav(dx<0?1:-1);},{passive:true});
   loadLLMConfigs(); loadMovies();
 }
 
@@ -326,10 +422,19 @@ function renderMovie(m,cast,tags,subs,timeline,shots){
   $("#delBtn").onclick=()=>delMovie(m.id);
   $("#upSubBtn").onclick=()=>uploadSub(m.id);
   main.querySelectorAll("[data-sub]").forEach(b=>b.onclick=()=>viewSegments(b.dataset.sub));
-  // lazy-load screenshot signed urls
+  // screenshots: lazy-resolve signed URLs only when a thumb scrolls into view
+  // (a feature film has 1000s of frames — eager fetch melts the browser), and
+  // click any thumb to open the lightbox.
+  currentShots=shots; currentSubs=subs; lbSegments=null; lbSegPromise=null;
   const sb=$("#shotBox");
-  shots.forEach(s=>{const img=document.createElement("img");img.alt="screenshot";sb.append(img);
-    api(`/api/film/screenshots/${s.id}/url`).then(r=>{img.src=r.url;}).catch(()=>{});});
+  if(thumbIO)thumbIO.disconnect();
+  thumbIO=new IntersectionObserver(es=>{es.forEach(e=>{if(!e.isIntersecting)return;const img=e.target;thumbIO.unobserve(img);
+    resolveShotUrl(img.dataset.scId).then(u=>{img.src=u;}).catch(()=>shotUrlCache.delete(img.dataset.scId));});},{rootMargin:"400px"});
+  currentShots.forEach((s,i)=>{
+    const img=document.createElement("img");img.alt="frame";img.dataset.scId=s.id;
+    img.title=ms2hms(s.ts_ms);img.onclick=()=>openLightbox(i);
+    sb.append(img);thumbIO.observe(img);
+  });
 }
 
 async function loadSimilar(id){
@@ -341,7 +446,13 @@ async function loadSimilar(id){
 
 async function viewSegments(subId){
   try{const r=await api(`/api/film/subtitles/${subId}/segments`);const segs=r.segments||[];
-    const box=$("#subBox");box.innerHTML=segs.map(s=>`<div class="seg"><span class="ts">${ms2t(s.start_ms)} → ${ms2t(s.end_ms)}</span><span>${esc(s.text)}</span></div>`).join("")||'<span class="muted">空</span>';
+    const box=$("#subBox");
+    box.innerHTML=segs.map(s=>{
+      const spk=s.speaker?`<b style="color:var(--accent)">${esc(s.speaker)}</b> `:"";
+      const jump=currentShots.length?` jump" data-ts="${s.start_ms}` : "";
+      return `<div class="seg"><span class="ts${jump}" title="${currentShots.length?'跳到对应画面':''}">${ms2t(s.start_ms)} → ${ms2t(s.end_ms)}</span><span>${spk}${esc(s.text)}</span></div>`;
+    }).join("")||'<span class="muted">空</span>';
+    box.querySelectorAll(".ts[data-ts]").forEach(el=>el.onclick=()=>{const i=nearestShotIndex(parseInt(el.dataset.ts));if(i>=0)openLightbox(i);else toast("暂无对应截图","");});
   }catch(e){toast(e.message,"err");}
 }
 
