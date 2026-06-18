@@ -156,6 +156,11 @@ func (p *Plugin) RegisterRoutes(r gin.IRouter) {
 
 			// Screenshots (binary → polar-assets via SDK; row holds asset_id + phash).
 			auth.POST("/movies/:id/screenshots", p.handleScreenshotUpload)
+			// Direct-to-storage upload: client computes sha256, gets grants,
+			// PUTs bytes straight to the assets provider, then commits refs —
+			// keyframe bytes never transit film-svc/nginx. (bulk path)
+			auth.POST("/movies/:id/screenshots/grants", p.handleScreenshotGrants)
+			auth.POST("/movies/:id/screenshots/commit", p.handleScreenshotCommit)
 			auth.GET("/movies/:id/screenshots", p.handleScreenshotList)
 			auth.GET("/screenshots/:scId/url", p.handleScreenshotURL)
 			auth.DELETE("/screenshots/:scId", p.handleScreenshotDelete)
