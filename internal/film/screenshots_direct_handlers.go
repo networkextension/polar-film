@@ -160,6 +160,7 @@ func (p *Plugin) handleScreenshotCommit(c *gin.Context) {
 	}
 
 	committed := 0
+	skipped := 0
 	for _, it := range req.Items {
 		if strings.TrimSpace(it.ScreenshotID) == "" || it.AssetID <= 0 {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "each item needs screenshot_id + asset_id"})
@@ -181,11 +182,16 @@ func (p *Plugin) handleScreenshotCommit(c *gin.Context) {
 			Phash:       it.Phash,
 			TsMs:        it.TsMs,
 		}
-		if err := p.insertScreenshot(ctx, s); err != nil {
+		inserted, err := p.insertScreenshotDedupByAsset(ctx, s)
+		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "record screenshot (asset finalized): " + err.Error()})
 			return
 		}
-		committed++
+		if inserted {
+			committed++
+		} else {
+			skipped++
+		}
 	}
-	c.JSON(http.StatusOK, gin.H{"committed": committed})
+	c.JSON(http.StatusOK, gin.H{"committed": committed, "skipped": skipped})
 }

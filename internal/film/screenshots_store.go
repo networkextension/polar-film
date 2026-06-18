@@ -32,6 +32,25 @@ func (p *Plugin) insertScreenshot(ctx context.Context, s Screenshot) error {
 	return err
 }
 
+// insertScreenshotDedupByAsset records a screenshot row only if this movie
+// doesn't already point at the same asset — makes the direct-upload commit
+// idempotent across re-pushes (the same keyframes dedup to the same asset_id,
+// so a re-push records no new rows). Returns true if a row was inserted.
+func (p *Plugin) insertScreenshotDedupByAsset(ctx context.Context, s Screenshot) (bool, error) {
+	res, err := p.DB.ExecContext(ctx, `
+		INSERT INTO screenshots (id, workspace_id, media_id, ts_ms, asset_id, phash, ocr_text, created_at)
+		SELECT $1,$2,$3,$4,$5,$6,$7, now()
+		WHERE NOT EXISTS (
+			SELECT 1 FROM screenshots WHERE workspace_id=$2 AND media_id=$3 AND asset_id=$5
+		)`,
+		s.ID, s.WorkspaceID, s.MediaID, nullInt(s.TsMs), s.AssetID, s.Phash, s.OcrText)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
 func (p *Plugin) listScreenshots(ctx context.Context, wsID, mediaID string) ([]Screenshot, error) {
 	rows, err := p.DB.QueryContext(ctx, `
 		SELECT id, workspace_id, media_id, ts_ms, asset_id, phash, ocr_text, created_at
