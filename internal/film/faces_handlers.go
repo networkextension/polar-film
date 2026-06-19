@@ -26,10 +26,11 @@ type faceUploadCluster struct {
 }
 
 type faceUploadFace struct {
-	Label   string  `json:"label"`
-	TsMs    *int    `json:"ts_ms"`
-	Box     Box     `json:"box"`
-	Quality float64 `json:"quality"`
+	Label     string    `json:"label"`
+	TsMs      *int      `json:"ts_ms"`
+	Box       Box       `json:"box"`
+	Quality   float64   `json:"quality"`
+	Embedding []float32 `json:"embedding"` // Vision feature-print (PF-14); optional
 }
 
 func (p *Plugin) handleFacesUpload(c *gin.Context) {
@@ -115,6 +116,7 @@ func (p *Plugin) handleFacesUpload(c *gin.Context) {
 			TsMs:         rf.TsMs,
 			Box:          rf.Box,
 			Quality:      rf.Quality,
+			Embedding:    rf.Embedding,
 		})
 	}
 	// face_count per cluster; backfill rep for clusters that only came from faces.

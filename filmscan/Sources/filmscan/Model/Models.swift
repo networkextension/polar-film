@@ -65,7 +65,8 @@ struct FaceDet: Codable, Hashable {
     var frameIdx: Int
     var timeMs: Int
     var box: Box
-    var cluster: Int    // face-cluster id (-1 = unassigned)
+    var cluster: Int          // face-cluster id (-1 = unassigned)
+    var embedding: [Float]?   // PF-14: Vision feature-print for server re-id
 }
 
 struct Faces: Codable {
