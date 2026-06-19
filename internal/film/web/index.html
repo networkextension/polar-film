@@ -170,6 +170,22 @@
   </div>
 </dialog>
 
+<dialog id="appearDlg">
+  <div class="hd"><span id="appearTitle">出场镜头</span> <span class="grow"></span><span class="muted" style="font-weight:400" id="appearMeta"></span></div>
+  <div class="bd">
+    <div class="muted" style="font-size:12px;margin-bottom:4px">画面 · 点击跳到对应帧</div>
+    <div class="facegrid" id="appearFrames"></div>
+    <div class="muted" style="font-size:12px;margin:12px 0 4px">台词 · 点击跳到对应画面</div>
+    <div id="appearLines" style="max-height:230px;overflow:auto"></div>
+  </div>
+  <div class="ft">
+    <button class="ghost" id="appearExportEdl">导出 EDL</button>
+    <button class="ghost" id="appearExportTxt">导出时间码</button>
+    <span class="grow"></span>
+    <button id="appearClose">关闭</button>
+  </div>
+</dialog>
+
 <dialog id="personDlg"><form method="dialog">
   <div class="hd">归到人物</div>
   <div class="bd"><label class="f">选择已有人物,或新建<select id="personSel"></select></label></div>
@@ -367,6 +383,10 @@ async function boot(){
     else faceOp(`/api/film/movies/${currentMovieID}/face-clusters/${panelCid}/assign`,who,"已命名整组",true);
   });
   $("#personPickCancel").onclick=()=>$("#personDlg").close();
+  // per-person appearances dialog (PF-13)
+  $("#appearClose").onclick=()=>$("#appearDlg").close();
+  $("#appearExportEdl").onclick=()=>exportPerson("edl");
+  $("#appearExportTxt").onclick=()=>exportPerson("txt");
   $("#lightbox").addEventListener("touchstart",e=>{lbTouchX=e.changedTouches[0].clientX;},{passive:true});
   $("#lightbox").addEventListener("touchend",e=>{if(lbTouchX==null)return;const dx=e.changedTouches[0].clientX-lbTouchX;lbTouchX=null;if(Math.abs(dx)>40)lbNav(dx<0?1:-1);},{passive:true});
   loadLLMConfigs(); loadMovies();
@@ -523,9 +543,11 @@ async function loadFaceClusters(mediaID){
     wall.innerHTML="";
     faceClusters.forEach(c=>{
       const card=document.createElement("div");card.className="facecard";card.dataset.cid=c.id;
-      card.innerHTML=`<div class="facethumb" data-thumb></div><div class="facename">${esc(clabel(c))}</div><div class="facemeta">${c.face_count} 张</div>`;
+      const navBtn=c.person_id?`<button class="ghost" data-nav style="margin-top:4px;font-size:11px;padding:2px 8px">镜头 ›</button>`:"";
+      card.innerHTML=`<div class="facethumb" data-thumb></div><div class="facename">${esc(clabel(c))}</div><div class="facemeta">${c.face_count} 张</div>${navBtn}`;
       if(c.rep_screenshot_id)faceThumb(c.rep_screenshot_id,c.rep_box,84).then(cv=>{const t=card.querySelector("[data-thumb]");t.innerHTML="";t.append(cv);});
       card.onclick=(e)=>{ if(e.metaKey||e.ctrlKey||e.shiftKey)toggleCluster(c.id,card); else openCluster(c.id); };
+      const nb=card.querySelector("[data-nav]"); if(nb)nb.onclick=(e)=>{ e.stopPropagation(); openAppearances(c.person_id,clabel(c)); };
       wall.append(card);
     });
   }catch(e){wall.innerHTML=`<span class="muted">${esc(e.message)}</span>`;}
@@ -589,6 +611,51 @@ async function createPersonPrompt(){
   const n=prompt("新人物名字:"); if(!n||!n.trim())return;
   try{ await api("/api/film/people",{method:"POST",body:{name:n.trim()}}); toast("已新建人物 "+n.trim(),"ok"); }
   catch(e){ if(e.status===409)toast("人物已存在:"+n.trim(),""); else toast(e.message,"err"); }
+}
+
+// ── per-person navigation + EDL/timecode export (PF-13) ──────────────────────
+let appearPid=null, appearName="";
+function jumpToTs(ts){ const i=nearestShotIndex(ts); if(i>=0){ $("#appearDlg").close(); openLightbox(i); } else toast("暂无对应截图",""); }
+async function openAppearances(pid,name){
+  appearPid=pid; appearName=name||"";
+  $("#appearTitle").textContent=`${name} · 出场`;
+  $("#appearMeta").textContent="加载中…";
+  const frames=$("#appearFrames"), lines=$("#appearLines");
+  frames.innerHTML=""; lines.innerHTML="";
+  $("#appearDlg").showModal();
+  try{
+    const r=await api(`/api/film/movies/${currentMovieID}/people/${pid}/appearances`);
+    const fr=r.frames||[], ln=r.lines||[];
+    $("#appearMeta").textContent=`${fr.length} 帧 · ${ln.length} 台词`;
+    frames.innerHTML=fr.length?"":'<span class="muted">无人脸</span>';
+    fr.forEach(f=>{
+      const cell=document.createElement("div");cell.className="facecell";cell.style.cursor="pointer";cell.title=ms2hms(f.ts_ms);
+      faceThumb(f.screenshot_id,f.box,72).then(cv=>cell.append(cv));
+      cell.onclick=()=>jumpToTs(f.ts_ms);
+      frames.append(cell);
+    });
+    lines.innerHTML=ln.length?"":'<span class="muted">无台词(该人物未在字幕中具名)</span>';
+    ln.forEach(s=>{
+      const row=document.createElement("div");row.className="seg";
+      row.innerHTML=`<span class="ts jump" data-ts="${s.start_ms}">${ms2hms(s.start_ms)} → ${ms2hms(s.end_ms)}</span><span>${esc(s.text)}</span>`;
+      row.querySelector(".ts").onclick=()=>jumpToTs(s.start_ms);
+      lines.append(row);
+    });
+  }catch(e){ $("#appearMeta").textContent=""; frames.innerHTML=`<span class="muted">${esc(e.message)}</span>`; }
+}
+// exportPerson downloads the shot list. A plain <a> can't send X-Workspace-Id,
+// so fetch with the same headers api() uses, then save the blob.
+async function exportPerson(fmt){
+  if(!appearPid)return;
+  try{
+    const h={};const tok=localStorage.getItem(TOKEN_KEY);if(tok)h["Authorization"]="Bearer "+tok;if(state.ws)h["X-Workspace-Id"]=state.ws;
+    const res=await fetch(`/api/film/movies/${currentMovieID}/people/${appearPid}/export?format=${fmt}`,{headers:h,credentials:"include"});
+    if(!res.ok){ let m="导出失败 ("+res.status+")"; try{m=(await res.json()).error||m;}catch{} throw new Error(m); }
+    const blob=await res.blob();const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");a.href=url;a.download=`${(appearName||"export").replace(/[\/\\]/g,"-")}.${fmt}`;
+    document.body.append(a);a.click();a.remove();URL.revokeObjectURL(url);
+    toast("已导出 "+fmt.toUpperCase(),"ok");
+  }catch(e){toast(e.message,"err");}
 }
 
 async function loadSimilar(id){
