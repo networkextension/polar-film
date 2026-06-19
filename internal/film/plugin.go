@@ -133,6 +133,10 @@ func (p *Plugin) RegisterRoutes(r gin.IRouter) {
 			auth.POST("/people/:id/merge", p.handlePersonMerge)
 			auth.POST("/movies/:id/people", p.handleMoviePersonAttach)
 			auth.DELETE("/movies/:id/people/:personId/:role", p.handleMoviePersonDetach)
+			// Per-person navigation + EDL/timecode export (PF-13): a person's
+			// frames + 台词 with timecodes, and a downloadable shot list.
+			auth.GET("/movies/:id/people/:personId/appearances", p.handlePersonAppearances)
+			auth.GET("/movies/:id/people/:personId/export", p.handlePersonExport)
 
 			// Tags + links.
 			auth.POST("/tags", p.handleTagCreate)
