@@ -41,8 +41,19 @@ func (p *Plugin) insertPerson(ctx context.Context, ps Person) error {
 // "Darcy") to a stable person id; runs inside the subtitle-ingest tx.
 func (p *Plugin) ensurePersonTx(ctx context.Context, tx *sql.Tx, wsID, name string) (string, error) {
 	var id string
-	// DO UPDATE (not DO NOTHING) so RETURNING fires on an existing row too.
+	// Case-insensitive reuse: "Tim Cook" and "tim cook" resolve to one person
+	// (avoids accidental case-only duplicates from manual naming).
 	err := tx.QueryRowContext(ctx, `
+		SELECT id FROM people WHERE workspace_id=$1 AND lower(name)=lower($2)
+		ORDER BY created_at LIMIT 1`, wsID, name).Scan(&id)
+	if err == nil {
+		return id, nil
+	}
+	if err != sql.ErrNoRows {
+		return "", err
+	}
+	// DO UPDATE (not DO NOTHING) so RETURNING fires on an exact-case race too.
+	err = tx.QueryRowContext(ctx, `
 		INSERT INTO people (id, workspace_id, name)
 		VALUES ($1,$2,$3)
 		ON CONFLICT (workspace_id, name) DO UPDATE SET name=EXCLUDED.name

@@ -27,6 +27,12 @@ func (p *Plugin) handlePersonCreate(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
 		return
 	}
+	// Reject case-insensitive duplicates so "Tim Cook"/"tim cook" don't split.
+	var exists bool
+	if err := p.DB.QueryRowContext(c.Request.Context(), `SELECT EXISTS(SELECT 1 FROM people WHERE workspace_id=$1 AND lower(name)=lower($2))`, wsID, req.Name).Scan(&exists); err == nil && exists {
+		c.JSON(http.StatusConflict, gin.H{"error": "a person named " + req.Name + " already exists"})
+		return
+	}
 	ps := Person{ID: newID("pe_"), WorkspaceID: wsID, Name: req.Name, AvatarAssetID: req.AvatarAssetID, Bio: req.Bio}
 	if err := p.insertPerson(c.Request.Context(), ps); err != nil {
 		if isUniqueViolation(err) {
