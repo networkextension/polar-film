@@ -8,6 +8,8 @@ package film
 import (
 	"context"
 	"database/sql"
+
+	"github.com/lib/pq"
 )
 
 // Box is a normalized face box (top-left origin, [0,1]).
@@ -140,4 +142,210 @@ func nz(s, def string) string {
 		return def
 	}
 	return s
+}
+
+// ── curation ops (P1) ───────────────────────────────────────────────────────
+
+// refreshCluster recomputes face_count, and re-picks the representative face if
+// the current rep's keyframe is no longer in the cluster.
+func refreshCluster(ctx context.Context, tx *sql.Tx, clusterID string) error {
+	var n int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM faces WHERE cluster_id=$1`, clusterID).Scan(&n); err != nil {
+		return err
+	}
+	var rep string
+	if err := tx.QueryRowContext(ctx, `SELECT rep_screenshot_id FROM face_clusters WHERE id=$1`, clusterID).Scan(&rep); err != nil {
+		return err
+	}
+	stillThere := false
+	if rep != "" {
+		_ = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM faces WHERE cluster_id=$1 AND screenshot_id=$2)`, clusterID, rep).Scan(&stillThere)
+	}
+	if stillThere {
+		_, err := tx.ExecContext(ctx, `UPDATE face_clusters SET face_count=$2 WHERE id=$1`, clusterID, n)
+		return err
+	}
+	// pick a new rep from the first remaining face (or clear when empty).
+	var sid string
+	var bx, by, bw, bh float64
+	err := tx.QueryRowContext(ctx, `
+		SELECT screenshot_id, box_x, box_y, box_w, box_h
+		FROM faces WHERE cluster_id=$1 ORDER BY ts_ms NULLS LAST LIMIT 1`, clusterID).
+		Scan(&sid, &bx, &by, &bw, &bh)
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `
+		UPDATE face_clusters SET rep_screenshot_id=$2, rep_box_x=$3, rep_box_y=$4, rep_box_w=$5, rep_box_h=$6, face_count=$7
+		WHERE id=$1`, clusterID, sid, bx, by, bw, bh, n)
+	return err
+}
+
+// clusterExists guards that a cluster belongs to the movie + workspace.
+func (p *Plugin) clusterExists(ctx context.Context, q interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, wsID, mediaID, cid string) (bool, error) {
+	var ok bool
+	err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM face_clusters WHERE id=$1 AND media_id=$2 AND workspace_id=$3)`, cid, mediaID, wsID).Scan(&ok)
+	return ok, err
+}
+
+// mergeFaceClusters moves every face from `from` clusters into `into`, adopts a
+// from-person when `into` has none, then deletes the emptied `from` clusters.
+func (p *Plugin) mergeFaceClusters(ctx context.Context, wsID, mediaID, into string, from []string) error {
+	tx, err := p.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck
+	if ok, err := p.clusterExists(ctx, tx, wsID, mediaID, into); err != nil {
+		return err
+	} else if !ok {
+		return sql.ErrNoRows
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE faces SET cluster_id=$1 WHERE media_id=$2 AND workspace_id=$3 AND cluster_id=ANY($4)`,
+		into, mediaID, wsID, pq.Array(from)); err != nil {
+		return err
+	}
+	var intoPerson sql.NullString
+	if err := tx.QueryRowContext(ctx, `SELECT person_id FROM face_clusters WHERE id=$1`, into).Scan(&intoPerson); err != nil {
+		return err
+	}
+	if !intoPerson.Valid {
+		var fp sql.NullString
+		_ = tx.QueryRowContext(ctx, `SELECT person_id FROM face_clusters WHERE id=ANY($1) AND person_id IS NOT NULL LIMIT 1`, pq.Array(from)).Scan(&fp)
+		if fp.Valid {
+			if _, err := tx.ExecContext(ctx, `UPDATE face_clusters SET person_id=$1 WHERE id=$2`, fp.String, into); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM face_clusters WHERE id=ANY($1) AND media_id=$2 AND workspace_id=$3`, pq.Array(from), mediaID, wsID); err != nil {
+		return err
+	}
+	if err := refreshCluster(ctx, tx, into); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// ensureUnassignedCluster returns the movie's "unassigned" bucket, creating it
+// on demand. Faces removed from a person land here for re-sorting.
+func ensureUnassignedCluster(ctx context.Context, tx *sql.Tx, wsID, mediaID string) (string, error) {
+	var id string
+	err := tx.QueryRowContext(ctx, `
+		SELECT id FROM face_clusters WHERE media_id=$1 AND workspace_id=$2 AND label='unassigned' AND source='manual' LIMIT 1`,
+		mediaID, wsID).Scan(&id)
+	if err == sql.ErrNoRows {
+		id = newID("fc_")
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO face_clusters (id, workspace_id, media_id, label, source, face_count, created_at)
+			VALUES ($1,$2,$3,'unassigned','manual',0, now())`, id, wsID, mediaID)
+		return id, err
+	}
+	return id, err
+}
+
+// removeFacesFromCluster moves selected faces out of `cid` into the unassigned bucket.
+func (p *Plugin) removeFacesFromCluster(ctx context.Context, wsID, mediaID, cid string, faceIDs []string) error {
+	tx, err := p.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck
+	if ok, err := p.clusterExists(ctx, tx, wsID, mediaID, cid); err != nil {
+		return err
+	} else if !ok {
+		return sql.ErrNoRows
+	}
+	un, err := ensureUnassignedCluster(ctx, tx, wsID, mediaID)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE faces SET cluster_id=$1 WHERE media_id=$2 AND workspace_id=$3 AND cluster_id=$4 AND id=ANY($5)`,
+		un, mediaID, wsID, cid, pq.Array(faceIDs)); err != nil {
+		return err
+	}
+	if err := refreshCluster(ctx, tx, cid); err != nil {
+		return err
+	}
+	if err := refreshCluster(ctx, tx, un); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// splitFaceCluster moves selected faces into a brand-new cluster (correcting a
+// mis-merge of two people). Returns the new cluster id.
+func (p *Plugin) splitFaceCluster(ctx context.Context, wsID, mediaID, cid string, faceIDs []string) (string, error) {
+	tx, err := p.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback() //nolint:errcheck
+	if ok, err := p.clusterExists(ctx, tx, wsID, mediaID, cid); err != nil {
+		return "", err
+	} else if !ok {
+		return "", sql.ErrNoRows
+	}
+	newCid := newID("fc_")
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO face_clusters (id, workspace_id, media_id, label, source, face_count, created_at)
+		VALUES ($1,$2,$3,'','manual',0, now())`, newCid, wsID, mediaID); err != nil {
+		return "", err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE faces SET cluster_id=$1 WHERE media_id=$2 AND workspace_id=$3 AND cluster_id=$4 AND id=ANY($5)`,
+		newCid, mediaID, wsID, cid, pq.Array(faceIDs)); err != nil {
+		return "", err
+	}
+	if err := refreshCluster(ctx, tx, cid); err != nil {
+		return "", err
+	}
+	if err := refreshCluster(ctx, tx, newCid); err != nil {
+		return "", err
+	}
+	return newCid, tx.Commit()
+}
+
+// assignCluster sets a cluster's person and adds the person to the movie cast.
+func (p *Plugin) assignCluster(ctx context.Context, wsID, mediaID, cid, personID string) error {
+	tx, err := p.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck
+	res, err := tx.ExecContext(ctx, `UPDATE face_clusters SET person_id=$1 WHERE id=$2 AND media_id=$3 AND workspace_id=$4`,
+		personID, cid, mediaID, wsID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return sql.ErrNoRows
+	}
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO media_people (media_id, person_id, role, character, ord)
+		SELECT $1,$2,'actor','',0
+		WHERE EXISTS (SELECT 1 FROM people WHERE id=$2 AND workspace_id=$3)
+		ON CONFLICT (media_id, person_id, role) DO NOTHING`, mediaID, personID, wsID)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// ensurePerson resolves (or creates) a person by name in the workspace.
+func (p *Plugin) ensurePerson(ctx context.Context, wsID, name string) (string, error) {
+	tx, err := p.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback() //nolint:errcheck
+	id, err := p.ensurePersonTx(ctx, tx, wsID, name)
+	if err != nil {
+		return "", err
+	}
+	return id, tx.Commit()
 }

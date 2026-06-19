@@ -48,6 +48,70 @@ func (p *Plugin) handlePersonList(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"people": people})
 }
 
+func (p *Plugin) handlePersonUpdate(c *gin.Context) {
+	wsID := c.GetString(ctxKeyWorkspaceID)
+	id := strings.TrimSpace(c.Param("id"))
+	var req struct {
+		Name          *string `json:"name"`
+		AvatarAssetID *string `json:"avatar_asset_id"`
+		Bio           *string `json:"bio"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body: " + err.Error()})
+		return
+	}
+	ok, err := p.updatePerson(c.Request.Context(), wsID, id, req.Name, req.AvatarAssetID, req.Bio)
+	if err != nil {
+		if isUniqueViolation(err) {
+			c.JSON(http.StatusConflict, gin.H{"error": "another person already has that name"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "person not found"})
+		return
+	}
+	people, _ := p.listPeople(c.Request.Context(), wsID)
+	c.JSON(http.StatusOK, gin.H{"people": people})
+}
+
+func (p *Plugin) handlePersonMerge(c *gin.Context) {
+	wsID := c.GetString(ctxKeyWorkspaceID)
+	into := strings.TrimSpace(c.Param("id"))
+	var req struct {
+		From []string `json:"from"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || len(req.From) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "from[] required"})
+		return
+	}
+	if err := p.mergePeople(c.Request.Context(), wsID, into, req.From); errors.Is(err, sql.ErrNoRows) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "target person not found"})
+		return
+	} else if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	people, _ := p.listPeople(c.Request.Context(), wsID)
+	c.JSON(http.StatusOK, gin.H{"people": people})
+}
+
+func (p *Plugin) handlePersonDelete(c *gin.Context) {
+	wsID := c.GetString(ctxKeyWorkspaceID)
+	ok, err := p.deletePerson(c.Request.Context(), wsID, strings.TrimSpace(c.Param("id")))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "person not found"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"deleted": true})
+}
+
 func (p *Plugin) handleMoviePersonAttach(c *gin.Context) {
 	ctx := c.Request.Context()
 	wsID := c.GetString(ctxKeyWorkspaceID)
