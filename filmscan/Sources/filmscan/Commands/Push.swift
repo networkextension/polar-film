@@ -39,6 +39,9 @@ struct Push: AsyncParsableCommand {
     @Flag(name: .long, help: "Skip uploading keyframes.")
     var noScreenshots: Bool = false
 
+    @Flag(name: .long, help: "Skip uploading face clusters.")
+    var noFaces: Bool = false
+
     func run() async throws {
         let outDir = URL(fileURLWithPath: out)
         let base = (server ?? ProcessInfo.processInfo.environment["FILMSCAN_SERVER"] ?? "")
@@ -71,6 +74,16 @@ struct Push: AsyncParsableCommand {
                 log("push: no frames.json — skipping keyframes")
             }
         }
+
+        if !noFaces {
+            let facesURL = outDir.appendingPathComponent("faces.json")
+            if let faces = try? loadJSON(Faces.self, from: facesURL), !faces.faces.isEmpty {
+                let (nf, nc) = try await client.uploadFaces(faces.faces)
+                log("push: faces uploaded — \(nf) faces in \(nc) clusters")
+            } else {
+                log("push: no faces.json — skipping faces")
+            }
+        }
         log("push: done → movie \(mediaID)")
     }
 
@@ -96,6 +109,11 @@ private struct CommitReqItem: Codable {
 }
 private struct CommitReq: Codable { let items: [CommitReqItem] }
 
+// Face upload wire types (Box is Codable {x,y,w,h}, matches the server).
+private struct FaceWireCluster: Codable { let label: String; let rep_ts_ms: Int; let rep_box: Box; let conf: Double }
+private struct FaceWireFace: Codable { let label: String; let ts_ms: Int; let box: Box; let quality: Double }
+private struct FaceWireReq: Codable { let clusters: [FaceWireCluster]; let faces: [FaceWireFace] }
+
 /// Thin film-API client: Bearer + X-Workspace-Id, JSON subtitle upload and
 /// direct-to-storage keyframe upload (grant → PUT-to-provider → commit).
 struct FilmClient: Sendable {
@@ -120,6 +138,25 @@ struct FilmClient: Sendable {
             throw Err("HTTP \(code): \(body)")
         }
         return data
+    }
+
+    /// Upload face clusters + per-face boxes (faces.json). Each face references
+    /// a keyframe by ts_ms (server resolves screenshot_id); the cluster rep is
+    /// its largest-area face. Replaces the movie's face set server-side.
+    func uploadFaces(_ faces: [FaceDet]) async throws -> (faces: Int, clusters: Int) {
+        let valid = faces.filter { $0.cluster >= 0 }
+        var byCluster: [Int: [FaceDet]] = [:]
+        for f in valid { byCluster[f.cluster, default: []].append(f) }
+        let clusters: [FaceWireCluster] = byCluster.map { (cid, fs) in
+            let rep = fs.max(by: { $0.box.w * $0.box.h < $1.box.w * $1.box.h }) ?? fs[0]
+            return FaceWireCluster(label: "fc\(cid)", rep_ts_ms: rep.timeMs, rep_box: rep.box, conf: 0)
+        }
+        let wireFaces = valid.map { FaceWireFace(label: "fc\($0.cluster)", ts_ms: $0.timeMs, box: $0.box, quality: 0) }
+        var req = request("api/film/movies/\(mediaID)/faces", method: "POST")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONEncoder().encode(FaceWireReq(clusters: clusters, faces: wireFaces))
+        _ = try await send(req)
+        return (wireFaces.count, clusters.count)
     }
 
     /// POST the SRT; returns the server's parsed segment count.

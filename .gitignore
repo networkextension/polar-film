@@ -2,3 +2,4 @@
 *.log
 .gocache/
 dist/
+/.build/

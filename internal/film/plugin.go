@@ -162,6 +162,10 @@ func (p *Plugin) RegisterRoutes(r gin.IRouter) {
 			auth.POST("/movies/:id/screenshots/grants", p.handleScreenshotGrants)
 			auth.POST("/movies/:id/screenshots/commit", p.handleScreenshotCommit)
 			auth.GET("/movies/:id/screenshots", p.handleScreenshotList)
+			// Face clusters (M9 curation P0): upload from filmscan + read.
+			auth.POST("/movies/:id/faces", p.handleFacesUpload)
+			auth.GET("/movies/:id/face-clusters", p.handleFaceClusterList)
+			auth.GET("/face-clusters/:cid/faces", p.handleFaceClusterFaces)
 			auth.GET("/screenshots/:scId/url", p.handleScreenshotURL)
 			auth.DELETE("/screenshots/:scId", p.handleScreenshotDelete)
 		}
