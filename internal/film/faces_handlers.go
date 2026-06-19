@@ -155,3 +155,144 @@ func (p *Plugin) handleFaceClusterFaces(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"faces": faces})
 }
+
+// respClusters replies 200 with the movie's refreshed cluster list.
+func (p *Plugin) respClusters(c *gin.Context, wsID, mediaID string) {
+	clusters, err := p.listFaceClusters(c.Request.Context(), wsID, mediaID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"clusters": clusters})
+}
+
+// movieOK guards that the movie exists in the workspace; writes the error + returns false.
+func (p *Plugin) movieOK(c *gin.Context, wsID, mediaID string) bool {
+	if _, err := p.getMovie(c.Request.Context(), wsID, mediaID); errors.Is(err, sql.ErrNoRows) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "movie not found"})
+		return false
+	} else if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return false
+	}
+	return true
+}
+
+func (p *Plugin) handleClusterMerge(c *gin.Context) {
+	wsID := c.GetString(ctxKeyWorkspaceID)
+	mediaID := strings.TrimSpace(c.Param("id"))
+	cid := strings.TrimSpace(c.Param("cid"))
+	if !p.movieOK(c, wsID, mediaID) {
+		return
+	}
+	var req struct {
+		From []string `json:"from"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || len(req.From) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "from[] required"})
+		return
+	}
+	if err := p.mergeFaceClusters(c.Request.Context(), wsID, mediaID, cid, req.From); errors.Is(err, sql.ErrNoRows) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "cluster not found"})
+		return
+	} else if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	p.respClusters(c, wsID, mediaID)
+}
+
+func (p *Plugin) handleClusterFacesRemove(c *gin.Context) {
+	wsID := c.GetString(ctxKeyWorkspaceID)
+	mediaID := strings.TrimSpace(c.Param("id"))
+	cid := strings.TrimSpace(c.Param("cid"))
+	if !p.movieOK(c, wsID, mediaID) {
+		return
+	}
+	var req struct {
+		FaceIDs []string `json:"face_ids"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || len(req.FaceIDs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "face_ids[] required"})
+		return
+	}
+	if err := p.removeFacesFromCluster(c.Request.Context(), wsID, mediaID, cid, req.FaceIDs); errors.Is(err, sql.ErrNoRows) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "cluster not found"})
+		return
+	} else if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	p.respClusters(c, wsID, mediaID)
+}
+
+func (p *Plugin) handleClusterSplit(c *gin.Context) {
+	wsID := c.GetString(ctxKeyWorkspaceID)
+	mediaID := strings.TrimSpace(c.Param("id"))
+	cid := strings.TrimSpace(c.Param("cid"))
+	if !p.movieOK(c, wsID, mediaID) {
+		return
+	}
+	var req struct {
+		FaceIDs []string `json:"face_ids"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || len(req.FaceIDs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "face_ids[] required"})
+		return
+	}
+	if _, err := p.splitFaceCluster(c.Request.Context(), wsID, mediaID, cid, req.FaceIDs); errors.Is(err, sql.ErrNoRows) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "cluster not found"})
+		return
+	} else if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	p.respClusters(c, wsID, mediaID)
+}
+
+func (p *Plugin) handleClusterAssign(c *gin.Context) {
+	ctx := c.Request.Context()
+	wsID := c.GetString(ctxKeyWorkspaceID)
+	mediaID := strings.TrimSpace(c.Param("id"))
+	cid := strings.TrimSpace(c.Param("cid"))
+	if !p.movieOK(c, wsID, mediaID) {
+		return
+	}
+	var req struct {
+		Name     string `json:"name"`
+		PersonID string `json:"person_id"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	personID := strings.TrimSpace(req.PersonID)
+	if personID != "" {
+		var ok bool
+		if err := p.DB.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM people WHERE id=$1 AND workspace_id=$2)`, personID, wsID).Scan(&ok); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		} else if !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "person not found"})
+			return
+		}
+	} else if name := strings.TrimSpace(req.Name); name != "" {
+		id, err := p.ensurePerson(ctx, wsID, name)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		personID = id
+	} else {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name or person_id required"})
+		return
+	}
+	if err := p.assignCluster(ctx, wsID, mediaID, cid, personID); errors.Is(err, sql.ErrNoRows) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "cluster not found"})
+		return
+	} else if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	p.respClusters(c, wsID, mediaID)
+}

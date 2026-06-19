@@ -6,6 +6,8 @@ import (
 	"context"
 	"database/sql"
 	"time"
+
+	"github.com/lib/pq"
 )
 
 type Person struct {
@@ -100,6 +102,96 @@ func (p *Plugin) resolveSpeakersForWorkspace(ctx context.Context, wsID string) (
 		updated += int(n)
 	}
 	return updated, nil
+}
+
+// updatePerson applies a partial update (nil pointer = leave as-is). Returns
+// false if no such person in the workspace. Unique (workspace,name) violations
+// surface as a pq error (the handler maps to 409).
+func (p *Plugin) updatePerson(ctx context.Context, wsID, id string, name, avatar, bio *string) (bool, error) {
+	res, err := p.DB.ExecContext(ctx, `
+		UPDATE people SET
+		  name            = COALESCE($3, name),
+		  avatar_asset_id = COALESCE($4, avatar_asset_id),
+		  bio             = COALESCE($5, bio)
+		WHERE id=$1 AND workspace_id=$2`,
+		id, wsID, strPtr(name), strPtr(avatar), strPtr(bio))
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// mergePeople folds the `from` people into `into`: repoint台词 segments, face
+// clusters and cast links, then delete the merged rows. Transactional.
+func (p *Plugin) mergePeople(ctx context.Context, wsID, into string, from []string) error {
+	tx, err := p.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck
+	var ok bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM people WHERE id=$1 AND workspace_id=$2)`, into, wsID).Scan(&ok); err != nil {
+		return err
+	} else if !ok {
+		return sql.ErrNoRows
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE subtitle_segments SET person_id=$1 WHERE workspace_id=$2 AND person_id=ANY($3)`, into, wsID, pq.Array(from)); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE face_clusters SET person_id=$1 WHERE workspace_id=$2 AND person_id=ANY($3)`, into, wsID, pq.Array(from)); err != nil {
+		return err
+	}
+	// re-point cast links, skipping (media,person,role) rows that already exist
+	// for `into`, then drop the leftover from-rows.
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO media_people (media_id, person_id, role, character, ord)
+		SELECT media_id, $1, role, character, ord FROM media_people WHERE person_id=ANY($2)
+		ON CONFLICT (media_id, person_id, role) DO NOTHING`, into, pq.Array(from)); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM media_people WHERE person_id=ANY($1)`, pq.Array(from)); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM people WHERE id=ANY($1) AND workspace_id=$2`, pq.Array(from), wsID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// deletePerson removes a person, nulling its references first.
+func (p *Plugin) deletePerson(ctx context.Context, wsID, id string) (bool, error) {
+	tx, err := p.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback() //nolint:errcheck
+	if _, err := tx.ExecContext(ctx, `UPDATE face_clusters SET person_id=NULL WHERE workspace_id=$1 AND person_id=$2`, wsID, id); err != nil {
+		return false, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE subtitle_segments SET person_id=NULL WHERE workspace_id=$1 AND person_id=$2`, wsID, id); err != nil {
+		return false, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM media_people WHERE person_id=$1`, id); err != nil {
+		return false, err
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM people WHERE id=$1 AND workspace_id=$2`, id, wsID)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// strPtr maps a partial-update pointer to a COALESCE arg (nil = keep current).
+func strPtr(s *string) any {
+	if s == nil {
+		return nil
+	}
+	return *s
 }
 
 func (p *Plugin) listPeople(ctx context.Context, wsID string) ([]Person, error) {

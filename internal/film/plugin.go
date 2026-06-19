@@ -128,6 +128,9 @@ func (p *Plugin) RegisterRoutes(r gin.IRouter) {
 			// People + cast links.
 			auth.POST("/people", p.handlePersonCreate)
 			auth.GET("/people", p.handlePersonList)
+			auth.PATCH("/people/:id", p.handlePersonUpdate)
+			auth.DELETE("/people/:id", p.handlePersonDelete)
+			auth.POST("/people/:id/merge", p.handlePersonMerge)
 			auth.POST("/movies/:id/people", p.handleMoviePersonAttach)
 			auth.DELETE("/movies/:id/people/:personId/:role", p.handleMoviePersonDetach)
 
@@ -166,6 +169,12 @@ func (p *Plugin) RegisterRoutes(r gin.IRouter) {
 			auth.POST("/movies/:id/faces", p.handleFacesUpload)
 			auth.GET("/movies/:id/face-clusters", p.handleFaceClusterList)
 			auth.GET("/face-clusters/:cid/faces", p.handleFaceClusterFaces)
+			// Face curation (P1): merge/remove/split/assign (merge routes through
+			// the :cid param — gin forbids a static sibling of a wildcard).
+			auth.POST("/movies/:id/face-clusters/:cid/merge", p.handleClusterMerge)
+			auth.POST("/movies/:id/face-clusters/:cid/faces/remove", p.handleClusterFacesRemove)
+			auth.POST("/movies/:id/face-clusters/:cid/split", p.handleClusterSplit)
+			auth.POST("/movies/:id/face-clusters/:cid/assign", p.handleClusterAssign)
 			auth.GET("/screenshots/:scId/url", p.handleScreenshotURL)
 			auth.DELETE("/screenshots/:scId", p.handleScreenshotDelete)
 		}
