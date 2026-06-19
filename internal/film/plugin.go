@@ -173,6 +173,12 @@ func (p *Plugin) RegisterRoutes(r gin.IRouter) {
 			auth.POST("/movies/:id/faces", p.handleFacesUpload)
 			auth.GET("/movies/:id/face-clusters", p.handleFaceClusterList)
 			auth.GET("/face-clusters/:cid/faces", p.handleFaceClusterFaces)
+			// Face re-identification over the per-face embedding (PF-14):
+			// merge suggestions, within-movie similar, cross-film person.
+			// (face-suggestions avoids siblinging the :cid wildcard above.)
+			auth.GET("/movies/:id/face-suggestions", p.handleFaceSuggestions)
+			auth.GET("/movies/:id/faces/:faceId/similar", p.handleFaceSimilar)
+			auth.GET("/people/:id/cross-film", p.handlePersonCrossFilm)
 			// Face curation (P1): merge/remove/split/assign (merge routes through
 			// the :cid param — gin forbids a static sibling of a wildcard).
 			auth.POST("/movies/:id/face-clusters/:cid/merge", p.handleClusterMerge)

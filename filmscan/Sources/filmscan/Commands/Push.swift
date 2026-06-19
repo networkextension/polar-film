@@ -111,7 +111,7 @@ private struct CommitReq: Codable { let items: [CommitReqItem] }
 
 // Face upload wire types (Box is Codable {x,y,w,h}, matches the server).
 private struct FaceWireCluster: Codable { let label: String; let rep_ts_ms: Int; let rep_box: Box; let conf: Double }
-private struct FaceWireFace: Codable { let label: String; let ts_ms: Int; let box: Box; let quality: Double }
+private struct FaceWireFace: Codable { let label: String; let ts_ms: Int; let box: Box; let quality: Double; let embedding: [Float]? }
 private struct FaceWireReq: Codable { let clusters: [FaceWireCluster]; let faces: [FaceWireFace] }
 
 /// Thin film-API client: Bearer + X-Workspace-Id, JSON subtitle upload and
@@ -151,7 +151,7 @@ struct FilmClient: Sendable {
             let rep = fs.max(by: { $0.box.w * $0.box.h < $1.box.w * $1.box.h }) ?? fs[0]
             return FaceWireCluster(label: "fc\(cid)", rep_ts_ms: rep.timeMs, rep_box: rep.box, conf: 0)
         }
-        let wireFaces = valid.map { FaceWireFace(label: "fc\($0.cluster)", ts_ms: $0.timeMs, box: $0.box, quality: 0) }
+        let wireFaces = valid.map { FaceWireFace(label: "fc\($0.cluster)", ts_ms: $0.timeMs, box: $0.box, quality: 0, embedding: $0.embedding) }
         var req = request("api/film/movies/\(mediaID)/faces", method: "POST")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONEncoder().encode(FaceWireReq(clusters: clusters, faces: wireFaces))

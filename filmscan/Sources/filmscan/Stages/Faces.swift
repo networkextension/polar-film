@@ -11,6 +11,7 @@ enum FacesStage {
     static func run(outDir: URL, frames: Frames, threshold: Float = 18.0) throws -> Faces {
         var dets: [FaceDet] = []
         var prototypes: [VNFeaturePrintObservation] = []  // one prototype per cluster
+        var loggedDim = false
 
         for f in frames.frames {
             guard let cg = loadCGImage(outDir.appendingPathComponent(f.file)) else { continue }
@@ -19,10 +20,21 @@ enum FacesStage {
                 let box = Box(x: Double(bb.minX), y: Double(1 - bb.maxY),
                               w: Double(bb.width), h: Double(bb.height))
                 var cluster = -1
+                var emb: [Float]? = nil
                 if let crop = cropFace(cg, bbox: bb), let fp = featurePrint(crop) {
                     cluster = assign(fp, &prototypes, threshold)
+                    // PF-14: keep the feature-print vector (used for clustering)
+                    // so the server can do re-identification (pgvector).
+                    let v = fpToFloats(fp)
+                    if !v.isEmpty {
+                        emb = v
+                        if !loggedDim {
+                            FileHandle.standardError.write("filmscan: face feature-print dim = \(v.count)\n".data(using: .utf8)!)
+                            loggedDim = true
+                        }
+                    }
                 }
-                dets.append(FaceDet(frameIdx: f.idx, timeMs: f.timeMs, box: box, cluster: cluster))
+                dets.append(FaceDet(frameIdx: f.idx, timeMs: f.timeMs, box: box, cluster: cluster, embedding: emb))
             }
         }
         return Faces(faces: dets, clusterCount: prototypes.count)
@@ -36,8 +48,25 @@ enum FacesStage {
 
     static func featurePrint(_ cg: CGImage) -> VNFeaturePrintObservation? {
         let req = VNGenerateImageFeaturePrintRequest()
+        // Pin revision 2 (768-d) for a stable embedding dimension across machines.
+        req.revision = VNGenerateImageFeaturePrintRequestRevision2
         try? VNImageRequestHandler(cgImage: cg, options: [:]).perform([req])
         return req.results?.first
+    }
+
+    /// Convert a feature-print observation to a plain Float vector (handles
+    /// both float and double element types).
+    static func fpToFloats(_ fp: VNFeaturePrintObservation) -> [Float] {
+        let n = fp.elementCount
+        guard n > 0 else { return [] }
+        switch fp.elementType {
+        case .float:
+            return fp.data.withUnsafeBytes { Array($0.bindMemory(to: Float.self).prefix(n)) }
+        case .double:
+            return fp.data.withUnsafeBytes { $0.bindMemory(to: Double.self).prefix(n).map { Float($0) } }
+        default:
+            return []
+        }
     }
 
     /// Greedy online clustering: nearest prototype within `threshold`, else new cluster.

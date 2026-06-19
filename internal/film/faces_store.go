@@ -35,12 +35,22 @@ type FaceCluster struct {
 }
 
 type Face struct {
-	ID           string `json:"id"`
-	ClusterID    string `json:"cluster_id"`
-	ScreenshotID string `json:"screenshot_id"`
-	TsMs         *int   `json:"ts_ms,omitempty"`
-	Box          Box    `json:"box"`
-	Quality      float64 `json:"quality"`
+	ID           string    `json:"id"`
+	ClusterID    string    `json:"cluster_id"`
+	ScreenshotID string    `json:"screenshot_id"`
+	TsMs         *int      `json:"ts_ms,omitempty"`
+	Box          Box       `json:"box"`
+	Quality      float64   `json:"quality"`
+	Embedding    []float32 `json:"embedding,omitempty"` // Vision feature-print (PF-14)
+}
+
+// nullVector maps a face embedding to a pgvector arg: nil → SQL NULL, else the
+// "[...]" literal (cast with ::vector at the call site). Reuses vectorLiteral.
+func nullVector(v []float32) any {
+	if len(v) == 0 {
+		return nil
+	}
+	return vectorLiteral(v)
 }
 
 // replaceMovieFaces atomically swaps the whole face set for a movie: delete
@@ -70,10 +80,10 @@ func (p *Plugin) replaceMovieFaces(ctx context.Context, wsID, mediaID string, cl
 	for _, f := range faces {
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO faces
-			  (id, workspace_id, media_id, cluster_id, screenshot_id, ts_ms, box_x, box_y, box_w, box_h, quality, created_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, now())`,
+			  (id, workspace_id, media_id, cluster_id, screenshot_id, ts_ms, box_x, box_y, box_w, box_h, quality, embedding, created_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::vector, now())`,
 			f.ID, wsID, mediaID, f.ClusterID, f.ScreenshotID, nullInt(f.TsMs),
-			f.Box.X, f.Box.Y, f.Box.W, f.Box.H, f.Quality); err != nil {
+			f.Box.X, f.Box.Y, f.Box.W, f.Box.H, f.Quality, nullVector(f.Embedding)); err != nil {
 			return err
 		}
 	}

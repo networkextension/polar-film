@@ -104,6 +104,12 @@
   .facecard .facethumb{width:84px;height:84px;border-radius:7px;margin:0 auto;background:var(--panel)}
   .facecard .facename{font-size:12px;font-weight:600;margin-top:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .facecard .facemeta{font-size:11px;color:var(--mut)}
+  /* PF-14 re-id: suggestion banner + cross-film hits */
+  .sugbox{margin-bottom:10px;border:1px solid var(--line);border-radius:9px;padding:8px;background:var(--panel2)}
+  .sugrow{display:flex;align-items:center;gap:8px;padding:4px 0;border-top:1px solid var(--line)}
+  .sugrow:first-child{border-top:0}
+  .sugrow canvas{width:40px;height:40px;border-radius:6px;background:var(--panel)}
+  .sugrow .nm{font-size:12px} .sugrow .sc{font-size:11px;color:var(--mut)}
   #faceDlg{max-width:680px;width:94%}
   .facegrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(72px,1fr));gap:8px;max-height:54vh;overflow-y:auto}
   .facecell{cursor:pointer;border:2px solid transparent;border-radius:7px;overflow:hidden;line-height:0}
@@ -165,6 +171,7 @@
     <button class="ghost" id="faceSelectAll">全选</button>
     <button class="ghost" id="faceSplit">拆分选中</button>
     <button class="danger" id="faceRemove">移除选中</button>
+    <button class="ghost" id="faceSimilar">找相似</button>
     <button class="ghost" id="faceAssign">归到人物…</button>
     <button id="faceDlgClose">关闭</button>
   </div>
@@ -177,11 +184,13 @@
     <div class="facegrid" id="appearFrames"></div>
     <div class="muted" style="font-size:12px;margin:12px 0 4px">台词 · 点击跳到对应画面</div>
     <div id="appearLines" style="max-height:230px;overflow:auto"></div>
+    <div id="appearCross"></div>
   </div>
   <div class="ft">
+    <button class="ghost" id="appearCrossFilm">跨片同人</button>
+    <span class="grow"></span>
     <button class="ghost" id="appearExportEdl">导出 EDL</button>
     <button class="ghost" id="appearExportTxt">导出时间码</button>
-    <span class="grow"></span>
     <button id="appearClose">关闭</button>
   </div>
 </dialog>
@@ -383,10 +392,12 @@ async function boot(){
     else faceOp(`/api/film/movies/${currentMovieID}/face-clusters/${panelCid}/assign`,who,"已命名整组",true);
   });
   $("#personPickCancel").onclick=()=>$("#personDlg").close();
+  $("#faceSimilar").onclick=showSimilarFaces;
   // per-person appearances dialog (PF-13)
   $("#appearClose").onclick=()=>$("#appearDlg").close();
   $("#appearExportEdl").onclick=()=>exportPerson("edl");
   $("#appearExportTxt").onclick=()=>exportPerson("txt");
+  $("#appearCrossFilm").onclick=loadCrossFilm;
   $("#lightbox").addEventListener("touchstart",e=>{lbTouchX=e.changedTouches[0].clientX;},{passive:true});
   $("#lightbox").addEventListener("touchend",e=>{if(lbTouchX==null)return;const dx=e.changedTouches[0].clientX-lbTouchX;lbTouchX=null;if(Math.abs(dx)>40)lbNav(dx<0?1:-1);},{passive:true});
   loadLLMConfigs(); loadMovies();
@@ -481,7 +492,7 @@ function renderMovie(m,cast,tags,subs,timeline,shots){
     </div>
     <div class="card"><div class="hd">剧情简介</div><div class="bd" id="summaryBox">${m.summary?esc(m.summary):'<span class="muted">暂无。上传字幕后点「AI 分析」自动生成。</span>'}</div></div>
     <div class="card"><div class="hd">演职人员</div><div class="bd">${castRows}</div></div>
-    <div class="card"><div class="hd">人物 <span class="muted" style="font-weight:400" id="faceCount"></span><span class="grow"></span><button class="ghost sm" id="newPersonBtn">+ 人物</button><button class="ghost sm hidden" id="mergeBtn">合并选中</button></div><div class="bd"><div class="facewall" id="faceWall"><span class="muted">加载中…</span></div></div></div>
+    <div class="card"><div class="hd">人物 <span class="muted" style="font-weight:400" id="faceCount"></span><span class="grow"></span><button class="ghost sm" id="newPersonBtn">+ 人物</button><button class="ghost sm hidden" id="mergeBtn">合并选中</button></div><div class="bd"><div id="faceSuggest"></div><div class="facewall" id="faceWall"><span class="muted">加载中…</span></div></div></div>
     <div class="card"><div class="hd">标签</div><div class="bd">${tagChips}</div></div>
     <div class="card"><div class="hd">剧情时间轴 <span class="muted" style="font-weight:400">· ${timeline.length} 节点</span></div><div class="bd">${tlRows}</div></div>
     <div class="card"><div class="hd">字幕 <span class="grow"></span><button class="ghost sm" id="upSubBtn">上传字幕</button></div><div class="bd" id="subBox">${subs.length?subs.map(s=>`<div class="row" style="justify-content:space-between"><span>${esc(s.lang)} · ${esc(s.format)}</span><button class="ghost sm" data-sub="${s.id}">查看台词</button></div>`).join(""):'<span class="muted">暂无字幕</span>'}</div></div>
@@ -550,7 +561,31 @@ async function loadFaceClusters(mediaID){
       const nb=card.querySelector("[data-nav]"); if(nb)nb.onclick=(e)=>{ e.stopPropagation(); openAppearances(c.person_id,clabel(c)); };
       wall.append(card);
     });
+    loadFaceSuggestions(mediaID);
   }catch(e){wall.innerHTML=`<span class="muted">${esc(e.message)}</span>`;}
+}
+// PF-14: 疑似同人 — show cluster pairs whose face embeddings are close, with a
+// one-click merge. Best-effort; silent if no embeddings / no pairs.
+async function loadFaceSuggestions(mediaID){
+  const box=$("#faceSuggest"); if(!box)return; box.innerHTML="";
+  let sg=[];
+  try{ sg=(await api(`/api/film/movies/${mediaID}/face-suggestions`)).suggestions||[]; }catch{ return; }
+  if(!sg.length)return;
+  const wrap=document.createElement("div");wrap.className="sugbox";
+  wrap.innerHTML=`<div class="muted" style="font-size:12px;margin-bottom:4px">疑似同人 · ${sg.length} 组(基于人脸相似度,仅供参考)</div>`;
+  sg.forEach(s=>{
+    const nameA=s.person_a||s.label_a||"未命名", nameB=s.person_b||s.label_b||"未命名";
+    const row=document.createElement("div");row.className="sugrow";
+    row.innerHTML=`<span data-a></span><span data-b></span><span class="nm">${esc(nameA)} ↔ ${esc(nameB)}</span><span class="sc">${(s.score*100).toFixed(0)}%</span><span class="grow"></span><button class="ghost sm" data-merge>合并</button>`;
+    if(s.rep_a&&s.rep_a.screenshot_id)faceThumb(s.rep_a.screenshot_id,s.rep_a.box,40).then(cv=>row.querySelector("[data-a]").append(cv));
+    if(s.rep_b&&s.rep_b.screenshot_id)faceThumb(s.rep_b.screenshot_id,s.rep_b.box,40).then(cv=>row.querySelector("[data-b]").append(cv));
+    row.querySelector("[data-merge]").onclick=async()=>{
+      try{ await api(`/api/film/movies/${mediaID}/face-clusters/${s.cluster_a}/merge`,{method:"POST",body:{from:[s.cluster_b]}}); toast("已合并","ok"); loadFaceClusters(mediaID); }
+      catch(e){toast(e.message,"err");}
+    };
+    wrap.append(row);
+  });
+  box.append(wrap);
 }
 function toggleCluster(cid,card){ selClusters.has(cid)?(selClusters.delete(cid),card.classList.remove("sel")):(selClusters.add(cid),card.classList.add("sel")); updateMergeBtn(); }
 function updateMergeBtn(){ const b=$("#mergeBtn"); if(!b)return; b.classList.toggle("hidden",selClusters.size<2); b.textContent=`合并选中 (${selClusters.size})`; }
@@ -591,6 +626,25 @@ async function faceOp(path,body,okMsg,close){
     loadFaceClusters(currentMovieID);
   }catch(e){toast(e.message,"err");}
 }
+// PF-14: within-movie similar-face search — pick one face, see the closest
+// others (any cluster), click a result to jump to its cluster.
+async function showSimilarFaces(){
+  if(selFaces.size!==1){ toast("选中一张脸再找相似",""); return; }
+  const faceID=[...selFaces][0];
+  const grid=$("#faceDlgGrid"); grid.innerHTML='<span class="muted">搜索中…</span>';
+  try{
+    const r=await api(`/api/film/movies/${currentMovieID}/faces/${faceID}/similar?k=18`);
+    const faces=r.faces||[];
+    $("#faceDlgTitle").textContent="相似的脸"; $("#faceSelN").textContent="0"; selFaces.clear();
+    grid.innerHTML=faces.length?"":'<span class="muted">没有相似的脸(需 filmscan 带 embedding 重新 push)</span>';
+    faces.forEach(f=>{
+      const cell=document.createElement("div");cell.className="facecell";cell.title=`${(f.score*100).toFixed(0)}% · ${f.person_name||f.cluster_label||""}`;
+      faceThumb(f.screenshot_id,f.box,72).then(cv=>cell.append(cv));
+      cell.onclick=()=>openCluster(f.cluster_id);
+      grid.append(cell);
+    });
+  }catch(e){grid.innerHTML=esc(e.message);}
+}
 // openPersonPicker — choose an existing person or create a new one, then onPick(personID).
 async function openPersonPicker(onPick){
   let people=[];
@@ -621,7 +675,7 @@ async function openAppearances(pid,name){
   $("#appearTitle").textContent=`${name} · 出场`;
   $("#appearMeta").textContent="加载中…";
   const frames=$("#appearFrames"), lines=$("#appearLines");
-  frames.innerHTML=""; lines.innerHTML="";
+  frames.innerHTML=""; lines.innerHTML=""; $("#appearCross").innerHTML="";
   $("#appearDlg").showModal();
   try{
     const r=await api(`/api/film/movies/${currentMovieID}/people/${pid}/appearances`);
@@ -656,6 +710,28 @@ async function exportPerson(fmt){
     document.body.append(a);a.click();a.remove();URL.revokeObjectURL(url);
     toast("已导出 "+fmt.toUpperCase(),"ok");
   }catch(e){toast(e.message,"err");}
+}
+// PF-14: cross-film person search — same face across other movies.
+async function loadCrossFilm(){
+  if(!appearPid)return;
+  const box=$("#appearCross"); box.innerHTML='<div class="muted" style="font-size:12px;margin-top:10px">跨片检索中…</div>';
+  try{
+    const r=await api(`/api/film/people/${appearPid}/cross-film?exclude_media=${encodeURIComponent(currentMovieID)}&k=30`);
+    const movies=r.movies||[];
+    if(!movies.length){ box.innerHTML='<div class="muted" style="font-size:12px;margin-top:10px">其他影片里没有相似的脸(需 embedding 数据)</div>'; return; }
+    box.innerHTML=`<div class="muted" style="font-size:12px;margin:12px 0 4px">跨片同人 · ${movies.length} 部(基于人脸相似度,仅供参考)</div>`;
+    const wrap=document.createElement("div");wrap.className="sugbox";
+    movies.forEach(m=>{
+      const row=document.createElement("div");row.className="sugrow";
+      const tag=m.already_cast?'<span class="sc" style="color:var(--accent)">已确认</span>':'<span class="sc">疑似</span>';
+      row.innerHTML=`<span class="nm" data-open style="cursor:pointer;text-decoration:underline dotted">${esc(m.title)}</span> ${tag} <span class="sc">${(m.best_score*100).toFixed(0)}%</span><span class="grow"></span><span data-thumbs style="display:flex;gap:4px"></span>`;
+      const th=row.querySelector("[data-thumbs]");
+      (m.faces||[]).slice(0,4).forEach(f=>faceThumb(f.screenshot_id,f.box,40).then(cv=>th.append(cv)));
+      row.querySelector("[data-open]").onclick=()=>{ $("#appearDlg").close(); openMovie(m.media_id); };
+      wrap.append(row);
+    });
+    box.append(wrap);
+  }catch(e){ box.innerHTML=`<div class="muted" style="font-size:12px;margin-top:10px">${esc(e.message)}</div>`; }
 }
 
 async function loadSimilar(id){
