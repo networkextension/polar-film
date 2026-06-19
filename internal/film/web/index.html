@@ -96,6 +96,18 @@
   .lb-meta{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--mut)}
   .lb-cap{font-size:15px;color:var(--txt);max-width:920px;line-height:1.45}
   .lb-cap b{color:var(--accent);margin-right:6px}
+  /* face curation (人物) */
+  .facewall{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:10px}
+  .facecard{cursor:pointer;border:1px solid var(--line);border-radius:9px;padding:6px;text-align:center;background:var(--panel2);transition:border-color .08s}
+  .facecard:hover{border-color:var(--mut)} .facecard.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+  .facecard .facethumb canvas{width:84px;height:84px;border-radius:7px;display:block;margin:0 auto;background:var(--panel)}
+  .facecard .facethumb{width:84px;height:84px;border-radius:7px;margin:0 auto;background:var(--panel)}
+  .facecard .facename{font-size:12px;font-weight:600;margin-top:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .facecard .facemeta{font-size:11px;color:var(--mut)}
+  #faceDlg{max-width:680px;width:94%}
+  .facegrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(72px,1fr));gap:8px;max-height:54vh;overflow-y:auto}
+  .facecell{cursor:pointer;border:2px solid transparent;border-radius:7px;overflow:hidden;line-height:0}
+  .facecell.sel{border-color:var(--accent)} .facecell canvas{width:100%;aspect-ratio:1;display:block;background:var(--panel)}
 </style>
 </head>
 <body>
@@ -144,6 +156,19 @@
   </div>
 </div>
 
+<dialog id="faceDlg">
+  <div class="hd"><span id="faceDlgTitle">人物</span> <span class="grow"></span><span class="muted" style="font-weight:400">选中 <span id="faceSelN">0</span></span></div>
+  <div class="bd"><div class="facegrid" id="faceDlgGrid"></div>
+    <div class="muted" style="font-size:12px">点选错误的脸,然后「移除」或「拆分」;「命名」把整组归到一个人物。</div>
+  </div>
+  <div class="ft">
+    <button class="ghost" id="faceAssign">命名…</button>
+    <button class="ghost" id="faceSplit">拆分选中</button>
+    <button class="danger" id="faceRemove">移除选中</button>
+    <button id="faceDlgClose">关闭</button>
+  </div>
+</dialog>
+
 <dialog id="newDlg"><form method="dialog">
   <div class="hd">新建影片</div>
   <div class="bd">
@@ -184,6 +209,9 @@ const shotUrlCache=new Map();      // scId → signed url (reused by grid + ligh
 let thumbIO=null;                  // IntersectionObserver: lazy-resolve thumb urls
 let lbIndex=-1;                    // active frame index in the lightbox
 let lbSegments=null, lbSegPromise=null;  // primary subtitle segments, lazy (for caption)
+// ── face curation (PF-12) ──
+let currentMovieID=null, faceClusters=[], panelCid=null;
+const selClusters=new Set(), selFaces=new Set(), imgCache=new Map();
 
 function toast(msg,kind=""){const t=document.createElement("div");t.className="toast "+kind;t.textContent=msg;$("#toast").append(t);setTimeout(()=>t.remove(),4200);}
 function ms2t(ms){if(ms==null)return"—";const s=Math.floor(ms/1000);return String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0");}
@@ -316,6 +344,11 @@ async function boot(){
   document.addEventListener("keydown",e=>{if($("#lightbox").classList.contains("hidden"))return;
     if(e.key==="Escape")closeLightbox();else if(e.key==="ArrowLeft")lbNav(-1);else if(e.key==="ArrowRight")lbNav(1);});
   let lbTouchX=null;
+  // face curation dialog (static; bind once)
+  $("#faceDlgClose").onclick=()=>$("#faceDlg").close();
+  $("#faceAssign").onclick=()=>{const n=prompt("人物名字:");if(n&&n.trim())faceOp(`/api/film/movies/${currentMovieID}/face-clusters/${panelCid}/assign`,{name:n.trim()},"已命名");};
+  $("#faceRemove").onclick=()=>{if(selFaces.size)faceOp(`/api/film/movies/${currentMovieID}/face-clusters/${panelCid}/faces/remove`,{face_ids:[...selFaces]},"已移除");};
+  $("#faceSplit").onclick=()=>{if(selFaces.size)faceOp(`/api/film/movies/${currentMovieID}/face-clusters/${panelCid}/split`,{face_ids:[...selFaces]},"已拆分");};
   $("#lightbox").addEventListener("touchstart",e=>{lbTouchX=e.changedTouches[0].clientX;},{passive:true});
   $("#lightbox").addEventListener("touchend",e=>{if(lbTouchX==null)return;const dx=e.changedTouches[0].clientX-lbTouchX;lbTouchX=null;if(Math.abs(dx)>40)lbNav(dx<0?1:-1);},{passive:true});
   loadLLMConfigs(); loadMovies();
@@ -410,6 +443,7 @@ function renderMovie(m,cast,tags,subs,timeline,shots){
     </div>
     <div class="card"><div class="hd">剧情简介</div><div class="bd" id="summaryBox">${m.summary?esc(m.summary):'<span class="muted">暂无。上传字幕后点「AI 分析」自动生成。</span>'}</div></div>
     <div class="card"><div class="hd">演职人员</div><div class="bd">${castRows}</div></div>
+    <div class="card"><div class="hd">人物 <span class="muted" style="font-weight:400" id="faceCount"></span><span class="grow"></span><button class="ghost sm hidden" id="mergeBtn">合并选中</button></div><div class="bd"><div class="facewall" id="faceWall"><span class="muted">加载中…</span></div></div></div>
     <div class="card"><div class="hd">标签</div><div class="bd">${tagChips}</div></div>
     <div class="card"><div class="hd">剧情时间轴 <span class="muted" style="font-weight:400">· ${timeline.length} 节点</span></div><div class="bd">${tlRows}</div></div>
     <div class="card"><div class="hd">字幕 <span class="grow"></span><button class="ghost sm" id="upSubBtn">上传字幕</button></div><div class="bd" id="subBox">${subs.length?subs.map(s=>`<div class="row" style="justify-content:space-between"><span>${esc(s.lang)} · ${esc(s.format)}</span><button class="ghost sm" data-sub="${s.id}">查看台词</button></div>`).join(""):'<span class="muted">暂无字幕</span>'}</div></div>
@@ -421,7 +455,9 @@ function renderMovie(m,cast,tags,subs,timeline,shots){
   $("#simBtn").onclick=()=>loadSimilar(m.id);
   $("#delBtn").onclick=()=>delMovie(m.id);
   $("#upSubBtn").onclick=()=>uploadSub(m.id);
+  $("#mergeBtn").onclick=mergeSelectedClusters;
   main.querySelectorAll("[data-sub]").forEach(b=>b.onclick=()=>viewSegments(b.dataset.sub));
+  loadFaceClusters(m.id);
   // screenshots: lazy-resolve signed URLs only when a thumb scrolls into view
   // (a feature film has 1000s of frames — eager fetch melts the browser), and
   // click any thumb to open the lightbox.
@@ -435,6 +471,72 @@ function renderMovie(m,cast,tags,subs,timeline,shots){
     img.title=ms2hms(s.ts_ms);img.onclick=()=>openLightbox(i);
     sb.append(img);thumbIO.observe(img);
   });
+}
+
+// loadImg caches decoded keyframes (one keyframe holds many faces).
+function loadImg(url){
+  if(imgCache.has(url))return imgCache.get(url);
+  const p=new Promise((res,rej)=>{const im=new Image();im.onload=()=>res(im);im.onerror=rej;im.src=url;});
+  imgCache.set(url,p);return p;
+}
+// faceThumb crops a face box out of its keyframe into a <canvas> (display-only;
+// cross-origin taint is fine since we never read it back).
+async function faceThumb(scId,box,size){
+  const cv=document.createElement("canvas");cv.width=size;cv.height=size;
+  const ctx=cv.getContext("2d");ctx.fillStyle="#1e222b";ctx.fillRect(0,0,size,size);
+  try{
+    const img=await loadImg(await resolveShotUrl(scId));
+    const sx=Math.max(0,box.x*img.naturalWidth),sy=Math.max(0,box.y*img.naturalHeight);
+    const sw=Math.max(1,box.w*img.naturalWidth),sh=Math.max(1,box.h*img.naturalHeight);
+    ctx.drawImage(img,sx,sy,sw,sh,0,0,size,size);
+  }catch{}
+  return cv;
+}
+async function loadFaceClusters(mediaID){
+  currentMovieID=mediaID;selClusters.clear();updateMergeBtn();
+  const wall=$("#faceWall");
+  try{
+    const r=await api(`/api/film/movies/${mediaID}/face-clusters`);
+    faceClusters=r.clusters||[];
+    $("#faceCount").textContent=faceClusters.length?("· "+faceClusters.length+" 组"):"";
+    if(!faceClusters.length){wall.innerHTML='<span class="muted">暂无人脸(filmscan push 时带 faces.json)</span>';return;}
+    wall.innerHTML="";
+    faceClusters.forEach(c=>{
+      const card=document.createElement("div");card.className="facecard";card.dataset.cid=c.id;
+      card.innerHTML=`<div class="facethumb" data-thumb></div><div class="facename">${esc(c.person_name||c.label||"未命名")}</div><div class="facemeta">${c.face_count} 张</div>`;
+      if(c.rep_screenshot_id)faceThumb(c.rep_screenshot_id,c.rep_box,84).then(cv=>{const t=card.querySelector("[data-thumb]");t.innerHTML="";t.append(cv);});
+      card.onclick=(e)=>{ if(e.metaKey||e.ctrlKey||e.shiftKey)toggleCluster(c.id,card); else openCluster(c.id); };
+      wall.append(card);
+    });
+  }catch(e){wall.innerHTML=`<span class="muted">${esc(e.message)}</span>`;}
+}
+function toggleCluster(cid,card){ selClusters.has(cid)?(selClusters.delete(cid),card.classList.remove("sel")):(selClusters.add(cid),card.classList.add("sel")); updateMergeBtn(); }
+function updateMergeBtn(){ const b=$("#mergeBtn"); if(!b)return; b.classList.toggle("hidden",selClusters.size<2); b.textContent=`合并选中 (${selClusters.size})`; }
+async function mergeSelectedClusters(){
+  const ids=[...selClusters]; if(ids.length<2)return;
+  try{ await api(`/api/film/movies/${currentMovieID}/face-clusters/${ids[0]}/merge`,{method:"POST",body:{from:ids.slice(1)}}); toast("已合并","ok"); loadFaceClusters(currentMovieID); }
+  catch(e){toast(e.message,"err");}
+}
+async function openCluster(cid){
+  panelCid=cid;selFaces.clear();$("#faceSelN").textContent="0";
+  const c=faceClusters.find(x=>x.id===cid);
+  $("#faceDlgTitle").textContent=(c&&(c.person_name||c.label))||"人物";
+  const grid=$("#faceDlgGrid");grid.innerHTML='<span class="muted">加载中…</span>';
+  $("#faceDlg").showModal();
+  try{
+    const r=await api(`/api/film/face-clusters/${cid}/faces`);const faces=r.faces||[];
+    grid.innerHTML=faces.length?"":'<span class="muted">空</span>';
+    faces.forEach(f=>{
+      const cell=document.createElement("div");cell.className="facecell";cell.dataset.fid=f.id;
+      faceThumb(f.screenshot_id,f.box,72).then(cv=>cell.append(cv));
+      cell.onclick=()=>{ selFaces.has(f.id)?(selFaces.delete(f.id),cell.classList.remove("sel")):(selFaces.add(f.id),cell.classList.add("sel")); $("#faceSelN").textContent=selFaces.size; };
+      grid.append(cell);
+    });
+  }catch(e){grid.innerHTML=esc(e.message);}
+}
+async function faceOp(path,body,okMsg){
+  try{ await api(path,{method:"POST",body}); toast(okMsg,"ok"); $("#faceDlg").close(); loadFaceClusters(currentMovieID); }
+  catch(e){toast(e.message,"err");}
 }
 
 async function loadSimilar(id){
