@@ -162,12 +162,19 @@
     <div class="muted" style="font-size:12px">点选错误的脸,然后「移除」或「拆分」;「命名」把整组归到一个人物。</div>
   </div>
   <div class="ft">
-    <button class="ghost" id="faceAssign">命名…</button>
+    <button class="ghost" id="faceSelectAll">全选</button>
     <button class="ghost" id="faceSplit">拆分选中</button>
     <button class="danger" id="faceRemove">移除选中</button>
+    <button class="ghost" id="faceAssign">归到人物…</button>
     <button id="faceDlgClose">关闭</button>
   </div>
 </dialog>
+
+<dialog id="personDlg"><form method="dialog">
+  <div class="hd">归到人物</div>
+  <div class="bd"><label class="f">选择已有人物,或新建<select id="personSel"></select></label></div>
+  <div class="ft"><button type="button" class="ghost" id="personPickCancel">取消</button><button type="button" id="personPickOk">确定</button></div>
+</form></dialog>
 
 <dialog id="newDlg"><form method="dialog">
   <div class="hd">新建影片</div>
@@ -346,9 +353,20 @@ async function boot(){
   let lbTouchX=null;
   // face curation dialog (static; bind once)
   $("#faceDlgClose").onclick=()=>$("#faceDlg").close();
-  $("#faceAssign").onclick=()=>{const n=prompt("人物名字:");if(n&&n.trim())faceOp(`/api/film/movies/${currentMovieID}/face-clusters/${panelCid}/assign`,{name:n.trim()},"已命名");};
-  $("#faceRemove").onclick=()=>{if(selFaces.size)faceOp(`/api/film/movies/${currentMovieID}/face-clusters/${panelCid}/faces/remove`,{face_ids:[...selFaces]},"已移除");};
-  $("#faceSplit").onclick=()=>{if(selFaces.size)faceOp(`/api/film/movies/${currentMovieID}/face-clusters/${panelCid}/split`,{face_ids:[...selFaces]},"已拆分");};
+  $("#faceRemove").onclick=()=>{ if(selFaces.size)faceOp(`/api/film/movies/${currentMovieID}/face-clusters/${panelCid}/faces/remove`,{face_ids:[...selFaces]},"已移除到未知"); else toast("先选脸",""); };
+  $("#faceSplit").onclick=()=>{ if(selFaces.size)faceOp(`/api/film/movies/${currentMovieID}/face-clusters/${panelCid}/split`,{face_ids:[...selFaces]},"已拆分"); else toast("先选脸",""); };
+  $("#faceSelectAll").onclick=()=>{
+    const cells=[...$("#faceDlgGrid").querySelectorAll('.facecell')];
+    const all=selFaces.size<cells.length; selFaces.clear();
+    cells.forEach(cell=>{ if(all){selFaces.add(cell.dataset.fid);cell.classList.add('sel');} else cell.classList.remove('sel'); });
+    $("#faceSelN").textContent=selFaces.size;
+  };
+  // 归到人物: selected faces → that person (move out of e.g. 未知); whole group if nothing picked.
+  $("#faceAssign").onclick=()=>openPersonPicker(pid=>{
+    if(selFaces.size)faceOp(`/api/film/movies/${currentMovieID}/face-clusters/${panelCid}/faces/assign`,{face_ids:[...selFaces],person_id:pid},"已归类");
+    else faceOp(`/api/film/movies/${currentMovieID}/face-clusters/${panelCid}/assign`,{person_id:pid},"已命名整组");
+  });
+  $("#personPickCancel").onclick=()=>$("#personDlg").close();
   $("#lightbox").addEventListener("touchstart",e=>{lbTouchX=e.changedTouches[0].clientX;},{passive:true});
   $("#lightbox").addEventListener("touchend",e=>{if(lbTouchX==null)return;const dx=e.changedTouches[0].clientX-lbTouchX;lbTouchX=null;if(Math.abs(dx)>40)lbNav(dx<0?1:-1);},{passive:true});
   loadLLMConfigs(); loadMovies();
@@ -443,7 +461,7 @@ function renderMovie(m,cast,tags,subs,timeline,shots){
     </div>
     <div class="card"><div class="hd">剧情简介</div><div class="bd" id="summaryBox">${m.summary?esc(m.summary):'<span class="muted">暂无。上传字幕后点「AI 分析」自动生成。</span>'}</div></div>
     <div class="card"><div class="hd">演职人员</div><div class="bd">${castRows}</div></div>
-    <div class="card"><div class="hd">人物 <span class="muted" style="font-weight:400" id="faceCount"></span><span class="grow"></span><button class="ghost sm hidden" id="mergeBtn">合并选中</button></div><div class="bd"><div class="facewall" id="faceWall"><span class="muted">加载中…</span></div></div></div>
+    <div class="card"><div class="hd">人物 <span class="muted" style="font-weight:400" id="faceCount"></span><span class="grow"></span><button class="ghost sm" id="newPersonBtn">+ 人物</button><button class="ghost sm hidden" id="mergeBtn">合并选中</button></div><div class="bd"><div class="facewall" id="faceWall"><span class="muted">加载中…</span></div></div></div>
     <div class="card"><div class="hd">标签</div><div class="bd">${tagChips}</div></div>
     <div class="card"><div class="hd">剧情时间轴 <span class="muted" style="font-weight:400">· ${timeline.length} 节点</span></div><div class="bd">${tlRows}</div></div>
     <div class="card"><div class="hd">字幕 <span class="grow"></span><button class="ghost sm" id="upSubBtn">上传字幕</button></div><div class="bd" id="subBox">${subs.length?subs.map(s=>`<div class="row" style="justify-content:space-between"><span>${esc(s.lang)} · ${esc(s.format)}</span><button class="ghost sm" data-sub="${s.id}">查看台词</button></div>`).join(""):'<span class="muted">暂无字幕</span>'}</div></div>
@@ -456,6 +474,7 @@ function renderMovie(m,cast,tags,subs,timeline,shots){
   $("#delBtn").onclick=()=>delMovie(m.id);
   $("#upSubBtn").onclick=()=>uploadSub(m.id);
   $("#mergeBtn").onclick=mergeSelectedClusters;
+  $("#newPersonBtn").onclick=createPersonPrompt;
   main.querySelectorAll("[data-sub]").forEach(b=>b.onclick=()=>viewSegments(b.dataset.sub));
   loadFaceClusters(m.id);
   // screenshots: lazy-resolve signed URLs only when a thumb scrolls into view
@@ -492,6 +511,7 @@ async function faceThumb(scId,box,size){
   }catch{}
   return cv;
 }
+function clabel(c){ return c.person_name || (c.label==='unassigned'?'未知':c.label) || '未命名'; }
 async function loadFaceClusters(mediaID){
   currentMovieID=mediaID;selClusters.clear();updateMergeBtn();
   const wall=$("#faceWall");
@@ -503,7 +523,7 @@ async function loadFaceClusters(mediaID){
     wall.innerHTML="";
     faceClusters.forEach(c=>{
       const card=document.createElement("div");card.className="facecard";card.dataset.cid=c.id;
-      card.innerHTML=`<div class="facethumb" data-thumb></div><div class="facename">${esc(c.person_name||c.label||"未命名")}</div><div class="facemeta">${c.face_count} 张</div>`;
+      card.innerHTML=`<div class="facethumb" data-thumb></div><div class="facename">${esc(clabel(c))}</div><div class="facemeta">${c.face_count} 张</div>`;
       if(c.rep_screenshot_id)faceThumb(c.rep_screenshot_id,c.rep_box,84).then(cv=>{const t=card.querySelector("[data-thumb]");t.innerHTML="";t.append(cv);});
       card.onclick=(e)=>{ if(e.metaKey||e.ctrlKey||e.shiftKey)toggleCluster(c.id,card); else openCluster(c.id); };
       wall.append(card);
@@ -520,7 +540,7 @@ async function mergeSelectedClusters(){
 async function openCluster(cid){
   panelCid=cid;selFaces.clear();$("#faceSelN").textContent="0";
   const c=faceClusters.find(x=>x.id===cid);
-  $("#faceDlgTitle").textContent=(c&&(c.person_name||c.label))||"人物";
+  $("#faceDlgTitle").textContent=c?clabel(c):"人物";
   const grid=$("#faceDlgGrid");grid.innerHTML='<span class="muted">加载中…</span>';
   $("#faceDlg").showModal();
   try{
@@ -537,6 +557,25 @@ async function openCluster(cid){
 async function faceOp(path,body,okMsg){
   try{ await api(path,{method:"POST",body}); toast(okMsg,"ok"); $("#faceDlg").close(); loadFaceClusters(currentMovieID); }
   catch(e){toast(e.message,"err");}
+}
+// openPersonPicker — choose an existing person or create a new one, then onPick(personID).
+async function openPersonPicker(onPick){
+  let people=[];
+  try{ people=(await api("/api/film/people")).people||[]; }catch(e){ toast(e.message,"err"); return; }
+  const sel=$("#personSel");
+  sel.innerHTML=people.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join("")+`<option value="__new">➕ 新建人物…</option>`;
+  $("#personDlg").showModal();
+  $("#personPickOk").onclick=async()=>{
+    let pid=sel.value;
+    if(pid==="__new"){ const n=prompt("新人物名字:"); if(!n||!n.trim())return;
+      try{ pid=(await api("/api/film/people",{method:"POST",body:{name:n.trim()}})).id; }catch(e){ toast(e.message,"err"); return; } }
+    $("#personDlg").close(); onPick(pid);
+  };
+}
+async function createPersonPrompt(){
+  const n=prompt("新人物名字:"); if(!n||!n.trim())return;
+  try{ await api("/api/film/people",{method:"POST",body:{name:n.trim()}}); toast("已新建人物 "+n.trim(),"ok"); }
+  catch(e){ toast(e.message,"err"); }
 }
 
 async function loadSimilar(id){

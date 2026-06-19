@@ -173,6 +173,7 @@ func (p *Plugin) RegisterRoutes(r gin.IRouter) {
 			// the :cid param — gin forbids a static sibling of a wildcard).
 			auth.POST("/movies/:id/face-clusters/:cid/merge", p.handleClusterMerge)
 			auth.POST("/movies/:id/face-clusters/:cid/faces/remove", p.handleClusterFacesRemove)
+			auth.POST("/movies/:id/face-clusters/:cid/faces/assign", p.handleClusterFacesAssign)
 			auth.POST("/movies/:id/face-clusters/:cid/split", p.handleClusterSplit)
 			auth.POST("/movies/:id/face-clusters/:cid/assign", p.handleClusterAssign)
 			auth.GET("/screenshots/:scId/url", p.handleScreenshotURL)
