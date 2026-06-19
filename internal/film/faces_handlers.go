@@ -266,25 +266,8 @@ func (p *Plugin) handleClusterAssign(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
-	personID := strings.TrimSpace(req.PersonID)
-	if personID != "" {
-		var ok bool
-		if err := p.DB.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM people WHERE id=$1 AND workspace_id=$2)`, personID, wsID).Scan(&ok); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		} else if !ok {
-			c.JSON(http.StatusNotFound, gin.H{"error": "person not found"})
-			return
-		}
-	} else if name := strings.TrimSpace(req.Name); name != "" {
-		id, err := p.ensurePerson(ctx, wsID, name)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		personID = id
-	} else {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "name or person_id required"})
+	personID, ok := p.resolvePerson(c, wsID, req.PersonID, req.Name)
+	if !ok {
 		return
 	}
 	if err := p.assignCluster(ctx, wsID, mediaID, cid, personID); errors.Is(err, sql.ErrNoRows) {
@@ -295,4 +278,61 @@ func (p *Plugin) handleClusterAssign(c *gin.Context) {
 		return
 	}
 	p.respClusters(c, wsID, mediaID)
+}
+
+// handleClusterFacesAssign moves selected faces (e.g. picked out of "unassigned")
+// to a person's cluster — name a subset rather than the whole cluster.
+func (p *Plugin) handleClusterFacesAssign(c *gin.Context) {
+	ctx := c.Request.Context()
+	wsID := c.GetString(ctxKeyWorkspaceID)
+	mediaID := strings.TrimSpace(c.Param("id"))
+	cid := strings.TrimSpace(c.Param("cid"))
+	if !p.movieOK(c, wsID, mediaID) {
+		return
+	}
+	var req struct {
+		FaceIDs  []string `json:"face_ids"`
+		Name     string   `json:"name"`
+		PersonID string   `json:"person_id"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || len(req.FaceIDs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "face_ids[] required"})
+		return
+	}
+	personID, ok := p.resolvePerson(c, wsID, req.PersonID, req.Name)
+	if !ok {
+		return
+	}
+	if err := p.moveFacesToPerson(ctx, wsID, mediaID, cid, req.FaceIDs, personID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	p.respClusters(c, wsID, mediaID)
+}
+
+// resolvePerson maps a person_id (verified) or a name (ensure) to a person id;
+// writes the error + returns false on failure.
+func (p *Plugin) resolvePerson(c *gin.Context, wsID, personID, name string) (string, bool) {
+	ctx := c.Request.Context()
+	if personID = strings.TrimSpace(personID); personID != "" {
+		var ok bool
+		if err := p.DB.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM people WHERE id=$1 AND workspace_id=$2)`, personID, wsID).Scan(&ok); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return "", false
+		} else if !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "person not found"})
+			return "", false
+		}
+		return personID, true
+	}
+	if name = strings.TrimSpace(name); name != "" {
+		id, err := p.ensurePerson(ctx, wsID, name)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return "", false
+		}
+		return id, true
+	}
+	c.JSON(http.StatusBadRequest, gin.H{"error": "name or person_id required"})
+	return "", false
 }

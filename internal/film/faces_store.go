@@ -336,6 +336,49 @@ func (p *Plugin) assignCluster(ctx context.Context, wsID, mediaID, cid, personID
 	return tx.Commit()
 }
 
+// moveFacesToPerson moves selected faces into the cluster that represents
+// personID in this movie (find-or-create), and adds the person to the cast.
+// Used to pick the right faces out of the "unassigned" bucket and label them.
+func (p *Plugin) moveFacesToPerson(ctx context.Context, wsID, mediaID, fromCid string, faceIDs []string, personID string) error {
+	tx, err := p.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck
+	var target string
+	err = tx.QueryRowContext(ctx, `SELECT id FROM face_clusters WHERE media_id=$1 AND workspace_id=$2 AND person_id=$3 LIMIT 1`, mediaID, wsID, personID).Scan(&target)
+	if err == sql.ErrNoRows {
+		target = newID("fc_")
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO face_clusters (id, workspace_id, media_id, label, person_id, source, face_count, created_at)
+			VALUES ($1,$2,$3,'',$4,'manual',0, now())`, target, wsID, mediaID, personID); err != nil {
+			return err
+		}
+	} else if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE faces SET cluster_id=$1 WHERE media_id=$2 AND workspace_id=$3 AND id=ANY($4)`,
+		target, mediaID, wsID, pq.Array(faceIDs)); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO media_people (media_id, person_id, role, character, ord)
+		SELECT $1,$2,'actor','',0 WHERE EXISTS (SELECT 1 FROM people WHERE id=$2 AND workspace_id=$3)
+		ON CONFLICT (media_id, person_id, role) DO NOTHING`, mediaID, personID, wsID); err != nil {
+		return err
+	}
+	if err := refreshCluster(ctx, tx, target); err != nil {
+		return err
+	}
+	if fromCid != "" && fromCid != target {
+		if err := refreshCluster(ctx, tx, fromCid); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 // ensurePerson resolves (or creates) a person by name in the workspace.
 func (p *Plugin) ensurePerson(ctx context.Context, wsID, name string) (string, error) {
 	tx, err := p.DB.BeginTx(ctx, nil)
