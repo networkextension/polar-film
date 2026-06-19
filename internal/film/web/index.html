@@ -353,8 +353,8 @@ async function boot(){
   let lbTouchX=null;
   // face curation dialog (static; bind once)
   $("#faceDlgClose").onclick=()=>$("#faceDlg").close();
-  $("#faceRemove").onclick=()=>{ if(selFaces.size)faceOp(`/api/film/movies/${currentMovieID}/face-clusters/${panelCid}/faces/remove`,{face_ids:[...selFaces]},"已移除到未知"); else toast("先选脸",""); };
-  $("#faceSplit").onclick=()=>{ if(selFaces.size)faceOp(`/api/film/movies/${currentMovieID}/face-clusters/${panelCid}/split`,{face_ids:[...selFaces]},"已拆分"); else toast("先选脸",""); };
+  $("#faceRemove").onclick=()=>{ if(selFaces.size)faceOp(`/api/film/movies/${currentMovieID}/face-clusters/${panelCid}/faces/remove`,{face_ids:[...selFaces]},"已移除到未知",false); else toast("先选脸",""); };
+  $("#faceSplit").onclick=()=>{ if(selFaces.size)faceOp(`/api/film/movies/${currentMovieID}/face-clusters/${panelCid}/split`,{face_ids:[...selFaces]},"已拆分",false); else toast("先选脸",""); };
   $("#faceSelectAll").onclick=()=>{
     const cells=[...$("#faceDlgGrid").querySelectorAll('.facecell')];
     const all=selFaces.size<cells.length; selFaces.clear();
@@ -363,8 +363,8 @@ async function boot(){
   };
   // 归到人物: selected faces → that person (move out of e.g. 未知); whole group if nothing picked.
   $("#faceAssign").onclick=()=>openPersonPicker(who=>{
-    if(selFaces.size)faceOp(`/api/film/movies/${currentMovieID}/face-clusters/${panelCid}/faces/assign`,{face_ids:[...selFaces],...who},"已归类");
-    else faceOp(`/api/film/movies/${currentMovieID}/face-clusters/${panelCid}/assign`,who,"已命名整组");
+    if(selFaces.size)faceOp(`/api/film/movies/${currentMovieID}/face-clusters/${panelCid}/faces/assign`,{face_ids:[...selFaces],...who},"已归类",false);
+    else faceOp(`/api/film/movies/${currentMovieID}/face-clusters/${panelCid}/assign`,who,"已命名整组",true);
   });
   $("#personPickCancel").onclick=()=>$("#personDlg").close();
   $("#lightbox").addEventListener("touchstart",e=>{lbTouchX=e.changedTouches[0].clientX;},{passive:true});
@@ -538,11 +538,17 @@ async function mergeSelectedClusters(){
   catch(e){toast(e.message,"err");}
 }
 async function openCluster(cid){
-  panelCid=cid;selFaces.clear();$("#faceSelN").textContent="0";
+  panelCid=cid;
   const c=faceClusters.find(x=>x.id===cid);
   $("#faceDlgTitle").textContent=c?clabel(c):"人物";
-  const grid=$("#faceDlgGrid");grid.innerHTML='<span class="muted">加载中…</span>';
   $("#faceDlg").showModal();
+  renderClusterFaces(cid);
+}
+// renderClusterFaces (re)draws the open dialog's face grid from fresh server
+// data — called on open AND after every face op so the preview reflects removals.
+async function renderClusterFaces(cid){
+  selFaces.clear();$("#faceSelN").textContent="0";
+  const grid=$("#faceDlgGrid");grid.innerHTML='<span class="muted">加载中…</span>';
   try{
     const r=await api(`/api/film/face-clusters/${cid}/faces`);const faces=r.faces||[];
     grid.innerHTML=faces.length?"":'<span class="muted">空</span>';
@@ -554,9 +560,14 @@ async function openCluster(cid){
     });
   }catch(e){grid.innerHTML=esc(e.message);}
 }
-async function faceOp(path,body,okMsg){
-  try{ await api(path,{method:"POST",body}); toast(okMsg,"ok"); $("#faceDlg").close(); loadFaceClusters(currentMovieID); }
-  catch(e){toast(e.message,"err");}
+// faceOp runs a curation op, refreshes the wall, and either re-renders the open
+// dialog grid (remove/split — stay to keep curating) or closes it (naming done).
+async function faceOp(path,body,okMsg,close){
+  try{
+    await api(path,{method:"POST",body}); toast(okMsg,"ok");
+    if(close) $("#faceDlg").close(); else if($("#faceDlg").open) await renderClusterFaces(panelCid);
+    loadFaceClusters(currentMovieID);
+  }catch(e){toast(e.message,"err");}
 }
 // openPersonPicker — choose an existing person or create a new one, then onPick(personID).
 async function openPersonPicker(onPick){
