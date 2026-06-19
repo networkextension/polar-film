@@ -362,9 +362,9 @@ async function boot(){
     $("#faceSelN").textContent=selFaces.size;
   };
   // 归到人物: selected faces → that person (move out of e.g. 未知); whole group if nothing picked.
-  $("#faceAssign").onclick=()=>openPersonPicker(pid=>{
-    if(selFaces.size)faceOp(`/api/film/movies/${currentMovieID}/face-clusters/${panelCid}/faces/assign`,{face_ids:[...selFaces],person_id:pid},"已归类");
-    else faceOp(`/api/film/movies/${currentMovieID}/face-clusters/${panelCid}/assign`,{person_id:pid},"已命名整组");
+  $("#faceAssign").onclick=()=>openPersonPicker(who=>{
+    if(selFaces.size)faceOp(`/api/film/movies/${currentMovieID}/face-clusters/${panelCid}/faces/assign`,{face_ids:[...selFaces],...who},"已归类");
+    else faceOp(`/api/film/movies/${currentMovieID}/face-clusters/${panelCid}/assign`,who,"已命名整组");
   });
   $("#personPickCancel").onclick=()=>$("#personDlg").close();
   $("#lightbox").addEventListener("touchstart",e=>{lbTouchX=e.changedTouches[0].clientX;},{passive:true});
@@ -565,17 +565,19 @@ async function openPersonPicker(onPick){
   const sel=$("#personSel");
   sel.innerHTML=people.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join("")+`<option value="__new">➕ 新建人物…</option>`;
   $("#personDlg").showModal();
-  $("#personPickOk").onclick=async()=>{
-    let pid=sel.value;
-    if(pid==="__new"){ const n=prompt("新人物名字:"); if(!n||!n.trim())return;
-      try{ pid=(await api("/api/film/people",{method:"POST",body:{name:n.trim()}})).id; }catch(e){ toast(e.message,"err"); return; } }
-    $("#personDlg").close(); onPick(pid);
+  // onPick gets {person_id} for an existing pick or {name} for 新建 — the assign
+  // endpoints resolve a name with find-or-create, so a duplicate name reuses the
+  // existing person instead of 409-ing.
+  $("#personPickOk").onclick=()=>{
+    const v=sel.value;
+    if(v==="__new"){ const n=prompt("新人物名字:"); if(!n||!n.trim())return; $("#personDlg").close(); onPick({name:n.trim()}); }
+    else { $("#personDlg").close(); onPick({person_id:v}); }
   };
 }
 async function createPersonPrompt(){
   const n=prompt("新人物名字:"); if(!n||!n.trim())return;
   try{ await api("/api/film/people",{method:"POST",body:{name:n.trim()}}); toast("已新建人物 "+n.trim(),"ok"); }
-  catch(e){ toast(e.message,"err"); }
+  catch(e){ if(e.status===409)toast("人物已存在:"+n.trim(),""); else toast(e.message,"err"); }
 }
 
 async function loadSimilar(id){
