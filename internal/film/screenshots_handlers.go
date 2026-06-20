@@ -99,7 +99,7 @@ func (p *Plugin) handleScreenshotUpload(c *gin.Context) {
 		}
 		created = append(created, s)
 	}
-	c.JSON(http.StatusCreated, gin.H{"screenshots": created})
+	jsonLen(c, http.StatusCreated, gin.H{"screenshots": created})
 }
 
 func (p *Plugin) handleScreenshotList(c *gin.Context) {
@@ -108,7 +108,7 @@ func (p *Plugin) handleScreenshotList(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"screenshots": shots})
+	jsonLen(c, http.StatusOK, gin.H{"screenshots": shots})
 }
 
 // handleScreenshotURL resolves a screenshot's asset_id to a short-lived
