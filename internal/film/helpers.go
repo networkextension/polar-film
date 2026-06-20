@@ -4,12 +4,31 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
 	"regexp"
+	"strconv"
 
+	"github.com/gin-gonic/gin"
 	"github.com/lib/pq"
 )
+
+// jsonLen writes body as JSON with an explicit Content-Length header. Plain
+// c.JSON lets net/http fall back to Transfer-Encoding: chunked once the body
+// outgrows its ~2KB buffer, which some proxies/clients choke on. Buffering the
+// payload up front lets us set Content-Length so the response stays identity-
+// encoded. Suitable for fully-materialized responses (not streaming ones).
+func jsonLen(c *gin.Context, status int, body any) {
+	buf, err := json.Marshal(body)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.Header("Content-Length", strconv.Itoa(len(buf)))
+	c.Data(status, "application/json; charset=utf-8", buf)
+}
 
 // anonSpeakerRe matches filmscan's un-named cluster ids ("spk0", "spk12").
 var anonSpeakerRe = regexp.MustCompile(`^spk\d+$`)
