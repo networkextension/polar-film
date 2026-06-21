@@ -64,6 +64,7 @@
   .shots{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px}
   .shots img{width:100%;border-radius:8px;border:1px solid var(--line);aspect-ratio:16/9;object-fit:cover;background:var(--panel2);cursor:zoom-in;transition:border-color .15s,transform .15s}
   .shots img:hover{border-color:var(--accent);transform:translateY(-1px)}
+  .shots-more{height:1px}
   .lb{position:fixed;inset:0;background:rgba(0,0,0,.92);display:flex;align-items:center;justify-content:center;z-index:100}
   .lb img{max-width:92vw;max-height:86vh;border-radius:8px;box-shadow:0 10px 50px rgba(0,0,0,.6);background:var(--panel2)}
   .lb .nav{position:absolute;top:50%;transform:translateY(-50%);font-size:34px;line-height:1;color:#fff;background:rgba(0,0,0,.35);border:none;border-radius:10px;padding:6px 16px;cursor:pointer;user-select:none}
@@ -301,15 +302,18 @@ async function openMovie(id){
     const [subs,tl,shots]=await Promise.all([
       api(`/api/film/movies/${id}/subtitles`).catch(()=>({subtitles:[]})),
       api(`/api/film/movies/${id}/timeline`).catch(()=>({timeline:[]})),
-      api(`/api/film/movies/${id}/screenshots`).catch(()=>({screenshots:[]})),
+      api(`/api/film/movies/${id}/screenshots?limit=60`).catch(()=>({screenshots:[]})),
     ]);
-    renderMovie(m,cast,tags,subs.subtitles||[],tl.timeline||[],shots.screenshots||[]);
+    renderMovie(m,cast,tags,subs.subtitles||[],tl.timeline||[],shots);
     document.querySelectorAll(".mvcard").forEach(c=>{});
   }catch(e){main.innerHTML=`<div class="empty">加载失败:${esc(e.message)}</div>`;}
 }
 
-function renderMovie(m,cast,tags,subs,timeline,shots){
+function renderMovie(m,cast,tags,subs,timeline,shotsPage){
   const main=$("#main");
+  const shots=shotsPage.screenshots||[];
+  const total=shotsPage.total??shots.length;
+  const pageSize=shotsPage.limit||60;
   const tagChips=tags.map(t=>`<span class="chip ${t.source==='ai'||t.kind==='ai'?'ai':'gold'}">${esc(t.name)}</span>`).join("")||'<span class="muted">暂无</span>';
   const castRows=cast.length?cast.map(c=>`<div class="cast"><span>${esc(c.name)}</span><span class="muted">${esc(c.role||"")}${c.character?" · "+esc(c.character):""}</span></div>`).join(""):'<span class="muted">暂无</span>';
   const tlRows=timeline.length?timeline.map(b=>`<div class="beat"><span class="ts">${ms2t(b.start_ms)}</span><span><span class="ev">${esc(b.event_type)}</span>${esc(b.description)}</span></div>`).join(""):'<span class="muted">暂无,点「AI 分析」生成</span>';
@@ -325,7 +329,7 @@ function renderMovie(m,cast,tags,subs,timeline,shots){
     <div class="card"><div class="hd">标签</div><div class="bd">${tagChips}</div></div>
     <div class="card"><div class="hd">剧情时间轴 <span class="muted" style="font-weight:400">· ${timeline.length} 节点</span></div><div class="bd">${tlRows}</div></div>
     <div class="card"><div class="hd">字幕 <span class="grow"></span><button class="ghost sm" id="upSubBtn">上传字幕</button></div><div class="bd" id="subBox">${subs.length?subs.map(s=>`<div class="row" style="justify-content:space-between"><span>${esc(s.lang)} · ${esc(s.format)}</span><button class="ghost sm" data-sub="${s.id}">查看台词</button></div>`).join(""):'<span class="muted">暂无字幕</span>'}</div></div>
-    <div class="card"><div class="hd">截图 <span class="muted" style="font-weight:400">· ${shots.length}</span></div><div class="bd"><div class="shots" id="shotBox">${shots.length?'':'<span class="muted">暂无截图</span>'}</div></div></div>
+    <div class="card"><div class="hd">截图 <span class="muted" style="font-weight:400">· ${total}</span></div><div class="bd"><div class="shots" id="shotBox">${total?'':'<span class="muted">暂无截图</span>'}</div><div class="shots-more" id="shotMore"></div></div></div>
     <div class="card hidden" id="simCard"><div class="hd">相似影片</div><div class="bd" id="simBox"></div></div>
     <div class="card hidden" id="jobCard"><div class="hd">分析进度</div><div class="bd" id="jobBox"></div></div>
   `;
@@ -334,22 +338,45 @@ function renderMovie(m,cast,tags,subs,timeline,shots){
   $("#delBtn").onclick=()=>delMovie(m.id);
   $("#upSubBtn").onclick=()=>uploadSub(m.id);
   main.querySelectorAll("[data-sub]").forEach(b=>b.onclick=()=>viewSegments(b.dataset.sub));
-  // screenshots: thumbnails fetch their signed url only when near the viewport
-  // (IntersectionObserver), so a movie with hundreds of shots doesn't fire
-  // hundreds of /url requests up front. Click opens a full-res lightbox.
-  const sb=$("#shotBox");
-  const io=new IntersectionObserver((ents,obs)=>{ents.forEach(e=>{
+  setupShots(m.id,shots,total,pageSize);
+}
+
+// setupShots — renders screenshot thumbnails with two layers of laziness:
+//  1) each thumb fetches its signed url only when it nears the viewport, so a
+//     page of thumbs doesn't fire N /url requests at once;
+//  2) the gallery itself is paginated — a sentinel below the grid pulls the
+//     next page (limit/offset) as the user scrolls, so we never load the whole
+//     set up front. Click opens a full-res lightbox over the loaded shots.
+function setupShots(mediaId,shots,total,pageSize){
+  const sb=$("#shotBox"),more=$("#shotMore");
+  if(!total){if(more)more.remove();return;}
+  const urlIO=new IntersectionObserver((ents,obs)=>{ents.forEach(e=>{
     if(!e.isIntersecting)return;
     const img=e.target;obs.unobserve(img);
     api(`/api/film/screenshots/${img.dataset.sid}/url`).then(r=>{shots[+img.dataset.idx]._url=r.url;img.src=r.url;}).catch(()=>{});
   });},{rootMargin:"300px"});
-  shots.forEach((s,i)=>{
+  const addThumb=(s,i)=>{
     const img=document.createElement("img");
     img.alt="screenshot";img.loading="lazy";img.dataset.sid=s.id;img.dataset.idx=i;
     if(s.ts_ms!=null)img.title=ms2t(s.ts_ms);
     img.onclick=()=>openLightbox(shots,i);
-    sb.append(img);io.observe(img);
-  });
+    sb.append(img);urlIO.observe(img);
+  };
+  shots.forEach(addThumb);
+  if(!more)return;
+  if(shots.length>=total){more.remove();return;}
+  let loading=false;
+  const pageIO=new IntersectionObserver(async ents=>{
+    if(!ents[0].isIntersecting||loading)return;
+    loading=true;
+    try{
+      const r=await api(`/api/film/movies/${mediaId}/screenshots?limit=${pageSize}&offset=${shots.length}`);
+      const page=r.screenshots||[],base=shots.length;
+      page.forEach((s,k)=>{shots.push(s);addThumb(s,base+k);});
+      if(shots.length>=(r.total??total)){pageIO.disconnect();more.remove();}
+    }catch(e){}finally{loading=false;}
+  },{rootMargin:"400px"});
+  pageIO.observe(more);
 }
 
 // openLightbox — full-res overlay viewer with ←/→/Esc nav. Signed urls are

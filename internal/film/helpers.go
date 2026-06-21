@@ -48,6 +48,24 @@ func newID(prefix string) string {
 	return prefix + hex.EncodeToString(b)
 }
 
+// parsePageParams turns raw ?limit/?offset query strings into a bounded page
+// window: limit defaults to 60 and is capped at 200; offset defaults to 0 and
+// is never negative. Invalid/absent values fall back to the defaults so the
+// endpoint stays backward-compatible with callers that pass neither.
+func parsePageParams(limitStr, offsetStr string) (limit, offset int) {
+	limit = 60
+	if v, err := strconv.Atoi(limitStr); err == nil && v > 0 {
+		if v > 200 {
+			v = 200
+		}
+		limit = v
+	}
+	if v, err := strconv.Atoi(offsetStr); err == nil && v > 0 {
+		offset = v
+	}
+	return
+}
+
 // isUniqueViolation reports whether err is a Postgres unique_violation
 // (SQLSTATE 23505) — used to translate duplicate inserts into HTTP 409.
 func isUniqueViolation(err error) bool {

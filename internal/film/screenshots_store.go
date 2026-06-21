@@ -28,12 +28,23 @@ func (p *Plugin) insertScreenshot(ctx context.Context, s Screenshot) error {
 	return err
 }
 
-func (p *Plugin) listScreenshots(ctx context.Context, wsID, mediaID string) ([]Screenshot, error) {
+// listScreenshotsPage returns one page of a movie's screenshots (ordered by
+// timestamp) plus the total row count, so the UI can lazy-page through large
+// galleries instead of pulling the whole set (which could be hundreds of rows /
+// hundreds of KB) in one response.
+func (p *Plugin) listScreenshotsPage(ctx context.Context, wsID, mediaID string, limit, offset int) ([]Screenshot, int, error) {
+	var total int
+	if err := p.DB.QueryRowContext(ctx,
+		`SELECT count(*) FROM screenshots WHERE workspace_id=$1 AND media_id=$2`, wsID, mediaID).Scan(&total); err != nil {
+		return nil, 0, err
+	}
 	rows, err := p.DB.QueryContext(ctx, `
 		SELECT id, workspace_id, media_id, ts_ms, asset_id, phash, ocr_text, created_at
-		FROM screenshots WHERE workspace_id=$1 AND media_id=$2 ORDER BY ts_ms NULLS LAST, created_at`, wsID, mediaID)
+		FROM screenshots WHERE workspace_id=$1 AND media_id=$2
+		ORDER BY ts_ms NULLS LAST, created_at
+		LIMIT $3 OFFSET $4`, wsID, mediaID, limit, offset)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 	out := []Screenshot{}
@@ -41,12 +52,12 @@ func (p *Plugin) listScreenshots(ctx context.Context, wsID, mediaID string) ([]S
 		var s Screenshot
 		var ts sql.NullInt64
 		if err := rows.Scan(&s.ID, &s.WorkspaceID, &s.MediaID, &ts, &s.AssetID, &s.Phash, &s.OcrText, &s.CreatedAt); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		s.TsMs = scanIntPtr(ts)
 		out = append(out, s)
 	}
-	return out, rows.Err()
+	return out, total, rows.Err()
 }
 
 // getScreenshot returns one row (for resolving asset_id → signed URL).
