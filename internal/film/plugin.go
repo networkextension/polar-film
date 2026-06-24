@@ -37,6 +37,7 @@ type Plugin struct {
 	dockLLM   *sdk.Client // M5: separate client w/ long timeout for LLM completions
 	embedder  Embedder    // M4 semantic search backend (ollama / offline fallback)
 	tmdb      *tmdbClient // M9: TMDB metadata enrichment (nil-safe; .enabled() gates)
+	hmacKey   []byte      // P1a: verify dock's signed scan-callback (DeriveHMACKey)
 	metrics   *filmMetrics
 	startedAt time.Time
 }
@@ -98,6 +99,7 @@ func New(ctx context.Context, cfg Config) (*Plugin, error) {
 		dockLLM:    dockLLM,
 		embedder:   newEmbedder(cfg),
 		tmdb:       newTMDBClient(cfg.TMDBBaseURL, cfg.TMDBToken),
+		hmacKey:    sdk.DeriveHMACKey(cfg.PluginToken),
 		metrics:    newFilmMetrics(),
 		startedAt:  time.Now(),
 	}, nil
@@ -109,6 +111,8 @@ func (p *Plugin) RegisterRoutes(r gin.IRouter) {
 
 	// dock→plugin loopback surface (M7): workspace data purge.
 	r.POST("/internal/v1/film/workspace-deleted", p.handleInternalWorkspaceDeleted)
+	// P1a: dock's signed completion callback for film.extract/film.analyze tasks.
+	r.POST("/internal/v1/film/scan-callback", p.handleScanCallback)
 
 	// /api/film/* — user API. nginx proxies /api/film/* → film-svc. M0 carries
 	// only a _whoami probe to prove the auth chain; movies/people/subtitles/
@@ -131,19 +135,14 @@ func (p *Plugin) RegisterRoutes(r gin.IRouter) {
 			// M9 TMDB metadata enrichment: one movie, or backfill un-enriched.
 			auth.POST("/movies/enrich-all", p.handleMovieEnrichBatch)
 			auth.POST("/movies/:id/enrich", p.handleMovieEnrich)
+			// M10 filmscan processing-status reporting (drives the 处理中 chip).
+			auth.POST("/movies/:id/scan-status", p.handleScanStatus)
 
 			// People + cast links.
 			auth.POST("/people", p.handlePersonCreate)
 			auth.GET("/people", p.handlePersonList)
-			auth.PATCH("/people/:id", p.handlePersonUpdate)
-			auth.DELETE("/people/:id", p.handlePersonDelete)
-			auth.POST("/people/:id/merge", p.handlePersonMerge)
 			auth.POST("/movies/:id/people", p.handleMoviePersonAttach)
 			auth.DELETE("/movies/:id/people/:personId/:role", p.handleMoviePersonDetach)
-			// Per-person navigation + EDL/timecode export (PF-13): a person's
-			// frames + 台词 with timecodes, and a downloadable shot list.
-			auth.GET("/movies/:id/people/:personId/appearances", p.handlePersonAppearances)
-			auth.GET("/movies/:id/people/:personId/export", p.handlePersonExport)
 
 			// Tags + links.
 			auth.POST("/tags", p.handleTagCreate)
@@ -170,29 +169,7 @@ func (p *Plugin) RegisterRoutes(r gin.IRouter) {
 
 			// Screenshots (binary → polar-assets via SDK; row holds asset_id + phash).
 			auth.POST("/movies/:id/screenshots", p.handleScreenshotUpload)
-			// Direct-to-storage upload: client computes sha256, gets grants,
-			// PUTs bytes straight to the assets provider, then commits refs —
-			// keyframe bytes never transit film-svc/nginx. (bulk path)
-			auth.POST("/movies/:id/screenshots/grants", p.handleScreenshotGrants)
-			auth.POST("/movies/:id/screenshots/commit", p.handleScreenshotCommit)
 			auth.GET("/movies/:id/screenshots", p.handleScreenshotList)
-			// Face clusters (M9 curation P0): upload from filmscan + read.
-			auth.POST("/movies/:id/faces", p.handleFacesUpload)
-			auth.GET("/movies/:id/face-clusters", p.handleFaceClusterList)
-			auth.GET("/face-clusters/:cid/faces", p.handleFaceClusterFaces)
-			// Face re-identification over the per-face embedding (PF-14):
-			// merge suggestions, within-movie similar, cross-film person.
-			// (face-suggestions avoids siblinging the :cid wildcard above.)
-			auth.GET("/movies/:id/face-suggestions", p.handleFaceSuggestions)
-			auth.GET("/movies/:id/faces/:faceId/similar", p.handleFaceSimilar)
-			auth.GET("/people/:id/cross-film", p.handlePersonCrossFilm)
-			// Face curation (P1): merge/remove/split/assign (merge routes through
-			// the :cid param — gin forbids a static sibling of a wildcard).
-			auth.POST("/movies/:id/face-clusters/:cid/merge", p.handleClusterMerge)
-			auth.POST("/movies/:id/face-clusters/:cid/faces/remove", p.handleClusterFacesRemove)
-			auth.POST("/movies/:id/face-clusters/:cid/faces/assign", p.handleClusterFacesAssign)
-			auth.POST("/movies/:id/face-clusters/:cid/split", p.handleClusterSplit)
-			auth.POST("/movies/:id/face-clusters/:cid/assign", p.handleClusterAssign)
 			auth.GET("/screenshots/:scId/url", p.handleScreenshotURL)
 			auth.DELETE("/screenshots/:scId", p.handleScreenshotDelete)
 		}

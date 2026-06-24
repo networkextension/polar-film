@@ -66,6 +66,11 @@ func (p *Plugin) handleSubtitleUpload(c *gin.Context) {
 	if eerr != nil {
 		log.Printf("film: embed segments for %s failed (keyword search still works): %v", s.ID, eerr)
 	}
+	// M10: subtitles landing = the filmscan analyze tier finished → mark done so
+	// the 处理中 chip clears even if the orchestration didn't POST a final status.
+	if _, serr := p.setScanStatus(ctx, wsID, mediaID, "done", "字幕已就绪"); serr != nil {
+		log.Printf("film: set scan_status done for %s failed: %v", mediaID, serr)
+	}
 	c.JSON(http.StatusCreated, gin.H{"subtitle": s, "segments": len(cues), "embedded": embedded})
 }
 
