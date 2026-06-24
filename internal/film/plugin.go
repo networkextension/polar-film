@@ -135,8 +135,15 @@ func (p *Plugin) RegisterRoutes(r gin.IRouter) {
 			// People + cast links.
 			auth.POST("/people", p.handlePersonCreate)
 			auth.GET("/people", p.handlePersonList)
+			auth.PATCH("/people/:id", p.handlePersonUpdate)
+			auth.DELETE("/people/:id", p.handlePersonDelete)
+			auth.POST("/people/:id/merge", p.handlePersonMerge)
 			auth.POST("/movies/:id/people", p.handleMoviePersonAttach)
 			auth.DELETE("/movies/:id/people/:personId/:role", p.handleMoviePersonDetach)
+			// Per-person navigation + EDL/timecode export (PF-13): a person's
+			// frames + 台词 with timecodes, and a downloadable shot list.
+			auth.GET("/movies/:id/people/:personId/appearances", p.handlePersonAppearances)
+			auth.GET("/movies/:id/people/:personId/export", p.handlePersonExport)
 
 			// Tags + links.
 			auth.POST("/tags", p.handleTagCreate)
@@ -163,7 +170,29 @@ func (p *Plugin) RegisterRoutes(r gin.IRouter) {
 
 			// Screenshots (binary → polar-assets via SDK; row holds asset_id + phash).
 			auth.POST("/movies/:id/screenshots", p.handleScreenshotUpload)
+			// Direct-to-storage upload: client computes sha256, gets grants,
+			// PUTs bytes straight to the assets provider, then commits refs —
+			// keyframe bytes never transit film-svc/nginx. (bulk path)
+			auth.POST("/movies/:id/screenshots/grants", p.handleScreenshotGrants)
+			auth.POST("/movies/:id/screenshots/commit", p.handleScreenshotCommit)
 			auth.GET("/movies/:id/screenshots", p.handleScreenshotList)
+			// Face clusters (M9 curation P0): upload from filmscan + read.
+			auth.POST("/movies/:id/faces", p.handleFacesUpload)
+			auth.GET("/movies/:id/face-clusters", p.handleFaceClusterList)
+			auth.GET("/face-clusters/:cid/faces", p.handleFaceClusterFaces)
+			// Face re-identification over the per-face embedding (PF-14):
+			// merge suggestions, within-movie similar, cross-film person.
+			// (face-suggestions avoids siblinging the :cid wildcard above.)
+			auth.GET("/movies/:id/face-suggestions", p.handleFaceSuggestions)
+			auth.GET("/movies/:id/faces/:faceId/similar", p.handleFaceSimilar)
+			auth.GET("/people/:id/cross-film", p.handlePersonCrossFilm)
+			// Face curation (P1): merge/remove/split/assign (merge routes through
+			// the :cid param — gin forbids a static sibling of a wildcard).
+			auth.POST("/movies/:id/face-clusters/:cid/merge", p.handleClusterMerge)
+			auth.POST("/movies/:id/face-clusters/:cid/faces/remove", p.handleClusterFacesRemove)
+			auth.POST("/movies/:id/face-clusters/:cid/faces/assign", p.handleClusterFacesAssign)
+			auth.POST("/movies/:id/face-clusters/:cid/split", p.handleClusterSplit)
+			auth.POST("/movies/:id/face-clusters/:cid/assign", p.handleClusterAssign)
 			auth.GET("/screenshots/:scId/url", p.handleScreenshotURL)
 			auth.DELETE("/screenshots/:scId", p.handleScreenshotDelete)
 		}

@@ -36,18 +36,8 @@ func cleanSearchTitle(title string) (string, int) {
 	return strings.TrimSpace(title), yr
 }
 
-// ensurePerson returns the workspace's person id for this name, creating it if
-// absent (idempotent). Non-tx sibling of ensurePersonTx, for the enrich path.
-func (p *Plugin) ensurePerson(ctx context.Context, wsID, name string) (string, error) {
-	var id string
-	err := p.DB.QueryRowContext(ctx, `
-		INSERT INTO people (id, workspace_id, name)
-		VALUES ($1,$2,$3)
-		ON CONFLICT (workspace_id, name) DO UPDATE SET name=EXCLUDED.name
-		RETURNING id`,
-		newID("pe_"), wsID, name).Scan(&id)
-	return id, err
-}
+// ensurePerson lives in faces_store.go (transactional, shared with the faces
+// path). The enrich path reuses it — identical signature.
 
 // enrichOneMovie does the resolve→fetch→writeback→cast for a single movie and
 // returns how many cast members were attached. Errors are returned (the caller

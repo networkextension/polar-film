@@ -8,7 +8,8 @@ struct Filmscan: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "filmscan",
         abstract: "Apple-native video analyzer for polar-film: speaker-attributed subtitles + keyframes.",
-        subcommands: [Analyze.self, Label.self, Push.self],
+        version: filmscanVersion,
+        subcommands: [Extract.self, Analyze.self, Label.self, Push.self],
         defaultSubcommand: Analyze.self
     )
 }

@@ -1,0 +1,172 @@
+import ArgumentParser
+import AVFoundation
+import Foundation
+
+// `filmscan extract` — the x86-capable "basic data extraction" tier. Runs the
+// offline AVFoundation + Vision stages (no WhisperKit/FluidAudio), uploads the
+// outputs into the shared workspace libraries, and emits a handoff manifest:
+//   • audio track   → workspace music library  (POST /api/tracks)
+//   • keyframes      → workspace photo library  (POST /api/photo/assets/upload)
+//   • extract-manifest.json (audio track id, keyframe asset ids, face boxes+embeddings)
+//
+// Because nothing here needs the Neural Engine, any online agent — x86 or arm64 —
+// can run it, so extraction never stalls waiting for a particular architecture.
+// The ANE-preferred `analyze` stage consumes the manifest.
+struct Extract: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Extract audio + keyframes/faces from a video and upload them to the workspace music/photo libraries (x86-capable)."
+    )
+
+    @Argument(help: "Path to the video file (mp4/mov).")
+    var video: String
+
+    @Option(name: .long, help: "Dock base URL (or env FILMSCAN_SERVER), e.g. https://zen.4950.store:2443.")
+    var server: String?
+
+    @Option(name: .long, help: "Bearer access token (or env FILMSCAN_TOKEN).")
+    var token: String?
+
+    @Option(name: .long, help: "Workspace id (X-Workspace-Id); omit for personal.")
+    var workspaceID: String?
+
+    @Option(name: .long, help: "Keyframe sampling interval in seconds.")
+    var frameInterval: Double = 2.0
+
+    @Option(name: .shortAndLong, help: "Output directory (default: alongside the video).")
+    var out: String?
+
+    @Flag(name: .long, help: "Skip uploading the audio to the music library.")
+    var noAudio: Bool = false
+
+    @Flag(name: .long, help: "Skip uploading keyframes to the photo library.")
+    var noKeyframes: Bool = false
+
+    func run() async throws {
+        let videoURL = URL(fileURLWithPath: video)
+        guard FileManager.default.fileExists(atPath: videoURL.path) else {
+            throw ValidationError("video not found: \(video)")
+        }
+        let base = (server ?? ProcessInfo.processInfo.environment["FILMSCAN_SERVER"] ?? "")
+            .trimmingCharacters(in: .whitespaces)
+        guard let baseURL = URL(string: base), base.hasPrefix("http") else {
+            throw ValidationError("--server (or FILMSCAN_SERVER) must be an http(s) URL")
+        }
+        let tok = (token ?? ProcessInfo.processInfo.environment["FILMSCAN_TOKEN"] ?? "")
+            .trimmingCharacters(in: .whitespaces)
+        guard !tok.isEmpty else { throw ValidationError("--token (or FILMSCAN_TOKEN) is required") }
+
+        let mediaName = videoURL.deletingPathExtension().lastPathComponent
+        let baseDir = out.map { URL(fileURLWithPath: $0) } ?? videoURL.deletingLastPathComponent()
+        let outDir = baseDir.appendingPathComponent(mediaName + ".filmscan", isDirectory: true)
+        try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
+
+        // ── audio → music library ───────────────────────────────────
+        var audioTrackID: String? = nil
+        var audioDurationMs = 0
+        if !noAudio {
+            log("audio: exporting .m4a …")
+            if let res = try await AudioExport.run(videoURL: videoURL, outDir: outDir) {
+                audioDurationMs = res.durationMs
+                let music = MusicClient(base: baseURL, token: tok, workspaceID: workspaceID)
+                log("audio: uploading to music library …")
+                audioTrackID = try await music.uploadTrack(fileURL: res.url, durationMs: res.durationMs, title: mediaName)
+                log("audio: track \(audioTrackID ?? "?") (\(audioDurationMs / 1000)s)")
+            } else {
+                log("audio: no audio track — skipping")
+            }
+        }
+
+        // ── keyframes (offline) ─────────────────────────────────────
+        let framesURL = outDir.appendingPathComponent("frames.json")
+        let frames: Frames
+        if let cached = try? loadJSON(Frames.self, from: framesURL) {
+            log("keyframes: cached (\(cached.frames.count) frames)")
+            frames = cached
+        } else {
+            log("keyframes: sampling every \(frameInterval)s …")
+            frames = try await Keyframes.run(videoURL: videoURL, outDir: outDir, everySec: frameInterval)
+            try saveJSON(frames, to: framesURL)
+            log("keyframes: \(frames.frames.count) frames")
+        }
+
+        // ── faces (offline; Vision runs on x86) ─────────────────────
+        let facesURL = outDir.appendingPathComponent("faces.json")
+        let faces: Faces
+        if let cached = try? loadJSON(Faces.self, from: facesURL) {
+            log("faces: cached (\(cached.faces.count) faces, \(cached.clusterCount) clusters)")
+            faces = cached
+        } else {
+            log("faces: detecting + clustering …")
+            faces = try FacesStage.run(outDir: outDir, frames: frames)
+            try saveJSON(faces, to: facesURL)
+            log("faces: \(faces.faces.count) faces → \(faces.clusterCount) clusters")
+        }
+
+        // ── keyframes → photo library ───────────────────────────────
+        var uploaded: [UploadedFrame] = []
+        if !noKeyframes, !frames.frames.isEmpty {
+            let photo = PhotoClient(base: baseURL, token: tok, workspaceID: workspaceID)
+            log("keyframes: uploading \(frames.frames.count) to photo library …")
+            uploaded = try await uploadFrames(frames.frames, baseDir: outDir, photo: photo)
+            log("keyframes: \(uploaded.count) uploaded")
+        }
+
+        // ── emit manifest ───────────────────────────────────────────
+        let media = try await probeMedia(videoURL: videoURL, durationMs: audioDurationMs)
+        let manifest = ExtractManifest(
+            media: media,
+            workspaceID: workspaceID,
+            audioTrackID: audioTrackID,
+            audioDurationMs: audioDurationMs,
+            frames: uploaded,
+            faces: faces.faces.map { ManifestFace(timeMs: $0.timeMs, box: $0.box, cluster: $0.cluster, embedding: $0.embedding) },
+            clusterCount: faces.clusterCount
+        )
+        let manifestURL = outDir.appendingPathComponent("extract-manifest.json")
+        try saveJSON(manifest, to: manifestURL)
+        log("extract: done → \(manifestURL.path)")
+    }
+
+    /// Upload keyframe JPEGs to the photo library, bounded-concurrent, preserving
+    /// frame order in the returned manifest entries.
+    private func uploadFrames(_ frames: [Frame], baseDir: URL, photo: PhotoClient, concurrency: Int = 6) async throws -> [UploadedFrame] {
+        var result = [UploadedFrame?](repeating: nil, count: frames.count)
+        var i = 0
+        while i < frames.count {
+            let chunk = Array(frames[i..<min(i + concurrency, frames.count)])
+            let offset = i
+            try await withThrowingTaskGroup(of: (Int, String).self) { group in
+                for (k, f) in chunk.enumerated() {
+                    let url = baseDir.appendingPathComponent(f.file)
+                    group.addTask {
+                        let id = try await photo.uploadKeyframe(fileURL: url)
+                        return (offset + k, id)
+                    }
+                }
+                for try await (idx, id) in group {
+                    result[idx] = UploadedFrame(idx: frames[idx].idx, timeMs: frames[idx].timeMs, assetID: id)
+                }
+            }
+            i += concurrency
+            log("keyframes:   \(min(i, frames.count))/\(frames.count) uploaded")
+        }
+        return result.compactMap { $0 }
+    }
+
+    /// Best-effort probe of the source video's shape for the manifest.
+    private func probeMedia(videoURL: URL, durationMs: Int) async throws -> MediaInfo {
+        var info = MediaInfo(path: videoURL.path, durationMs: durationMs)
+        let asset = AVURLAsset(url: videoURL)
+        if let dur = try? await asset.load(.duration) {
+            let ms = Int((CMTimeGetSeconds(dur) * 1000).rounded())
+            if ms > 0 { info.durationMs = ms }
+        }
+        if let track = try? await asset.loadTracks(withMediaType: .video).first {
+            if let size = try? await track.load(.naturalSize) {
+                info.width = Int(abs(size.width)); info.height = Int(abs(size.height))
+            }
+            if let rate = try? await track.load(.nominalFrameRate) { info.fps = Double(rate) }
+        }
+        return info
+    }
+}

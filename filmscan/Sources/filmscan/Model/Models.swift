@@ -65,7 +65,8 @@ struct FaceDet: Codable, Hashable {
     var frameIdx: Int
     var timeMs: Int
     var box: Box
-    var cluster: Int    // face-cluster id (-1 = unassigned)
+    var cluster: Int          // face-cluster id (-1 = unassigned)
+    var embedding: [Float]?   // PF-14: Vision feature-print for server re-id
 }
 
 struct Faces: Codable {
@@ -84,4 +85,39 @@ struct AudioTurn: Codable, Hashable {
 
 struct Diarization: Codable {
     var turns: [AudioTurn]
+}
+
+// ── extract stage handoff ───────────────────────────────────────────
+// The `extract` stage runs on any agent (x86 or arm64): it pushes the audio to
+// the workspace music library and the keyframes to the workspace photo library,
+// then writes this manifest. The `analyze` stage (ANE-preferred) consumes it —
+// it can pull the audio back from the music-library asset and resolve face
+// detections against the uploaded keyframes — without re-decoding the source.
+
+/// One uploaded keyframe: its photo-library asset id + the time it was sampled.
+struct UploadedFrame: Codable, Hashable {
+    var idx: Int
+    var timeMs: Int
+    var assetID: String   // photo-library asset id
+}
+
+/// One detected face, tied to its uploaded keyframe by time. Carries the 768-d
+/// Vision feature-print so the analyze/identity tier can re-ID via pgvector.
+struct ManifestFace: Codable, Hashable {
+    var timeMs: Int
+    var box: Box
+    var cluster: Int
+    var embedding: [Float]?
+}
+
+/// Written to <out>/extract-manifest.json by the extract stage.
+struct ExtractManifest: Codable {
+    var media: MediaInfo
+    var workspaceID: String?
+    /// music-library track id for the extracted audio (nil if the video had none).
+    var audioTrackID: String?
+    var audioDurationMs: Int
+    var frames: [UploadedFrame]
+    var faces: [ManifestFace]
+    var clusterCount: Int
 }

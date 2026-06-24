@@ -103,15 +103,12 @@ func (p *Plugin) handleScreenshotUpload(c *gin.Context) {
 }
 
 func (p *Plugin) handleScreenshotList(c *gin.Context) {
-	// Paginated: ?limit (default 60, capped 200) & ?offset (>=0). Both default
-	// to a sane first page when absent/invalid, so old callers still work.
-	limit, offset := parsePageParams(c.Query("limit"), c.Query("offset"))
-	shots, total, err := p.listScreenshotsPage(c.Request.Context(), c.GetString(ctxKeyWorkspaceID), strings.TrimSpace(c.Param("id")), limit, offset)
+	shots, err := p.listScreenshots(c.Request.Context(), c.GetString(ctxKeyWorkspaceID), strings.TrimSpace(c.Param("id")))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	jsonLen(c, http.StatusOK, gin.H{"screenshots": shots, "total": total, "limit": limit, "offset": offset})
+	jsonLen(c, http.StatusOK, gin.H{"screenshots": shots})
 }
 
 // handleScreenshotURL resolves a screenshot's asset_id to a short-lived

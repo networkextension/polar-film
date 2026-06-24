@@ -56,6 +56,19 @@ filmscan label <dir>/<media>.filmscan --set spk0=Darcy --set spk1=Elizabeth
 ```
 Rewrites the SRT so lines read `[Darcy] …`; persists `names.json`.
 
+**TMDB auto-name** — match each `spkN.jpg` to the movie's cast profile photos
+(Vision feature-print) and auto-assign the nearest character within a confidence
+threshold; low-confidence clusters are reported for manual `--set` (and a manual
+`--set` always wins). Best-effort (cross-domain frame↔headshot); ArcFace later
+raises accuracy.
+```bash
+filmscan label <dir>/<media>.filmscan --tmdb-id 4348 --tmdb-key $TMDB_API_KEY
+filmscan label <dir>/<media>.filmscan --tmdb-cast credits.json   # offline / CN-blocked
+```
+CN note: TMDB + image.tmdb.org are often blocked and macOS URLSession ignores
+`http_proxy` — use `--tmdb-cast` with a pre-saved `/3/movie/{id}/credits` JSON
+(its `profile_path` may point at local image files).
+
 ## Push to polar-film (P4c)
 filmscan is macOS-only, the film service is Linux — so the Mac uploads results
 over the film HTTP API (it doesn't shell out). The server parses the SRT's

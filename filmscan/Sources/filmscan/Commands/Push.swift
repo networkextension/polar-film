@@ -1,4 +1,5 @@
 import ArgumentParser
+import CryptoKit
 import Foundation
 
 // P4c — upload an analyzed bundle to the polar-film knowledge base. filmscan is
@@ -38,6 +39,9 @@ struct Push: AsyncParsableCommand {
     @Flag(name: .long, help: "Skip uploading keyframes.")
     var noScreenshots: Bool = false
 
+    @Flag(name: .long, help: "Skip uploading face clusters.")
+    var noFaces: Bool = false
+
     func run() async throws {
         let outDir = URL(fileURLWithPath: out)
         let base = (server ?? ProcessInfo.processInfo.environment["FILMSCAN_SERVER"] ?? "")
@@ -64,10 +68,20 @@ struct Push: AsyncParsableCommand {
         if !noScreenshots {
             let framesURL = outDir.appendingPathComponent("frames.json")
             if let frames = try? loadJSON(Frames.self, from: framesURL), !frames.frames.isEmpty {
-                let n = try await client.uploadKeyframes(frames.frames, baseDir: outDir)
-                log("push: \(n) keyframes uploaded")
+                let r = try await client.uploadKeyframes(frames.frames, baseDir: outDir)
+                log("push: keyframes done — \(r.uploaded) uploaded direct, \(r.deduped) deduped")
             } else {
                 log("push: no frames.json — skipping keyframes")
+            }
+        }
+
+        if !noFaces {
+            let facesURL = outDir.appendingPathComponent("faces.json")
+            if let faces = try? loadJSON(Faces.self, from: facesURL), !faces.faces.isEmpty {
+                let (nf, nc) = try await client.uploadFaces(faces.faces)
+                log("push: faces uploaded — \(nf) faces in \(nc) clusters")
+            } else {
+                log("push: no faces.json — skipping faces")
             }
         }
         log("push: done → movie \(mediaID)")
@@ -80,9 +94,29 @@ struct Push: AsyncParsableCommand {
     }
 }
 
+// Wire types for the direct-to-storage keyframe upload (snake_case to match
+// the film API JSON directly).
+private struct GrantReqItem: Codable { let sha256: String; let size: Int; let mime: String; let ext: String; let ts_ms: Int }
+private struct GrantReq: Codable { let items: [GrantReqItem] }
+private struct GrantRespItem: Codable {
+    let sha256: String; let screenshot_id: String
+    let asset_id: Int; let provider_id: Int; let put_url: String; let exists: Bool
+}
+private struct GrantResp: Codable { let grants: [GrantRespItem] }
+private struct CommitReqItem: Codable {
+    let screenshot_id: String; let asset_id: Int; let provider_id: Int
+    let ts_ms: Int; let phash: String; let exists: Bool
+}
+private struct CommitReq: Codable { let items: [CommitReqItem] }
+
+// Face upload wire types (Box is Codable {x,y,w,h}, matches the server).
+private struct FaceWireCluster: Codable { let label: String; let rep_ts_ms: Int; let rep_box: Box; let conf: Double }
+private struct FaceWireFace: Codable { let label: String; let ts_ms: Int; let box: Box; let quality: Double; let embedding: [Float]? }
+private struct FaceWireReq: Codable { let clusters: [FaceWireCluster]; let faces: [FaceWireFace] }
+
 /// Thin film-API client: Bearer + X-Workspace-Id, JSON subtitle upload and
-/// multipart keyframe upload (batched).
-struct FilmClient {
+/// direct-to-storage keyframe upload (grant → PUT-to-provider → commit).
+struct FilmClient: Sendable {
     let base: URL
     let token: String
     let workspaceID: String?
@@ -106,6 +140,25 @@ struct FilmClient {
         return data
     }
 
+    /// Upload face clusters + per-face boxes (faces.json). Each face references
+    /// a keyframe by ts_ms (server resolves screenshot_id); the cluster rep is
+    /// its largest-area face. Replaces the movie's face set server-side.
+    func uploadFaces(_ faces: [FaceDet]) async throws -> (faces: Int, clusters: Int) {
+        let valid = faces.filter { $0.cluster >= 0 }
+        var byCluster: [Int: [FaceDet]] = [:]
+        for f in valid { byCluster[f.cluster, default: []].append(f) }
+        let clusters: [FaceWireCluster] = byCluster.map { (cid, fs) in
+            let rep = fs.max(by: { $0.box.w * $0.box.h < $1.box.w * $1.box.h }) ?? fs[0]
+            return FaceWireCluster(label: "fc\(cid)", rep_ts_ms: rep.timeMs, rep_box: rep.box, conf: 0)
+        }
+        let wireFaces = valid.map { FaceWireFace(label: "fc\($0.cluster)", ts_ms: $0.timeMs, box: $0.box, quality: 0, embedding: $0.embedding) }
+        var req = request("api/film/movies/\(mediaID)/faces", method: "POST")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONEncoder().encode(FaceWireReq(clusters: clusters, faces: wireFaces))
+        _ = try await send(req)
+        return (wireFaces.count, clusters.count)
+    }
+
     /// POST the SRT; returns the server's parsed segment count.
     func uploadSubtitle(lang: String, content: String) async throws -> Int {
         var req = request("api/film/movies/\(mediaID)/subtitles", method: "POST")
@@ -116,45 +169,116 @@ struct FilmClient {
         return (obj?["segments"] as? Int) ?? 0
     }
 
-    /// Upload keyframes as multipart `file[]` + aligned `ts_ms[]`, in batches.
-    func uploadKeyframes(_ frames: [Frame], baseDir: URL, batch: Int = 20) async throws -> Int {
-        var sent = 0
+    /// Upload keyframes direct to storage: per batch, hash locally, ask film
+    /// for upload grants, PUT the misses straight to the assets provider
+    /// (bytes never transit film-svc), then commit the refs. Returns counts of
+    /// (newly uploaded, deduped/skipped).
+    func uploadKeyframes(_ frames: [Frame], baseDir: URL, batch: Int = 100, concurrency: Int = 6) async throws -> (uploaded: Int, deduped: Int) {
+        var uploaded = 0, deduped = 0, done = 0
         var i = 0
         while i < frames.count {
             let slice = Array(frames[i..<min(i + batch, frames.count)])
-            let boundary = "filmscan-\(mediaID)-\(i)"
-            var body = Data()
+
+            // 1. Local metadata: bytes, sha256, size, ext. (order-aligned)
+            // (phash is left to a future server-side backfill — see note below.)
+            var locals: [(frame: Frame, bytes: Data, sha: String, ext: String)] = []
+            var items: [GrantReqItem] = []
             for f in slice {
                 let url = baseDir.appendingPathComponent(f.file)
                 guard let bytes = try? Data(contentsOf: url) else { continue }
-                appendPart(&body, boundary: boundary, name: "file",
-                           filename: (f.file as NSString).lastPathComponent,
-                           contentType: "image/jpeg", data: bytes)
-                appendField(&body, boundary: boundary, name: "ts_ms", value: String(f.timeMs))
+                let sha = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+                var ext = "." + (f.file as NSString).pathExtension.lowercased()
+                if ext == "." { ext = ".jpg" }
+                locals.append((f, bytes, sha, ext))
+                items.append(GrantReqItem(sha256: sha, size: bytes.count, mime: "image/jpeg", ext: ext, ts_ms: f.timeMs))
             }
-            body.append("--\(boundary)--\r\n".data(using: .utf8)!)
-            var req = request("api/film/movies/\(mediaID)/screenshots", method: "POST")
-            req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-            req.httpBody = body
-            _ = try await send(req)
-            sent += slice.count
-            log("push:   keyframes \(sent)/\(frames.count)")
+            if locals.isEmpty { i += batch; continue }
+
+            // 2. Grants (order-aligned with locals).
+            let grants = try await requestGrants(items)
+            guard grants.count == locals.count else {
+                throw Err("grant count mismatch: \(grants.count) != \(locals.count)")
+            }
+
+            // 3. PUT the misses straight to the provider, bounded-concurrent + retried.
+            let misses: [(idx: Int, url: String)] = grants.enumerated()
+                .filter { !$0.element.exists && !$0.element.put_url.isEmpty }
+                .map { ($0.offset, $0.element.put_url) }
+            var j = 0
+            while j < misses.count {
+                let chunk = Array(misses[j..<min(j + concurrency, misses.count)])
+                try await withThrowingTaskGroup(of: Void.self) { group in
+                    for m in chunk {
+                        let bytes = locals[m.idx].bytes
+                        let url = m.url
+                        group.addTask { try await self.withRetry { try await self.putBlob(url, data: bytes) } }
+                    }
+                    try await group.waitForAll()
+                }
+                j += concurrency
+            }
+
+            // 4. Commit refs (records rows; idempotent server-side by media+asset).
+            // phash left empty: perceptual hashing is deferred to a uniform
+            // server-side backfill (CoreGraphics vs Go's image/jpeg can't be
+            // made byte-identical, and the column is advisory/M4+).
+            let commitItems = grants.enumerated().map { (k, g) in
+                CommitReqItem(screenshot_id: g.screenshot_id, asset_id: g.asset_id,
+                              provider_id: g.provider_id, ts_ms: locals[k].frame.timeMs,
+                              phash: "", exists: g.exists)
+            }
+            try await commitScreenshots(commitItems)
+
+            uploaded += misses.count
+            deduped += grants.count - misses.count
+            done += grants.count
+            log("push:   keyframes \(done)/\(frames.count) (uploaded \(uploaded), dup \(deduped))")
             i += batch
         }
-        return sent
+        return (uploaded, deduped)
     }
 
-    private func appendField(_ body: inout Data, boundary: String, name: String, value: String) {
-        body.append("--\(boundary)\r\n".data(using: .utf8)!)
-        body.append("Content-Disposition: form-data; name=\"\(name)\"\r\n\r\n".data(using: .utf8)!)
-        body.append("\(value)\r\n".data(using: .utf8)!)
+    private func requestGrants(_ items: [GrantReqItem]) async throws -> [GrantRespItem] {
+        var req = request("api/film/movies/\(mediaID)/screenshots/grants", method: "POST")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONEncoder().encode(GrantReq(items: items))
+        let data = try await send(req)
+        return try JSONDecoder().decode(GrantResp.self, from: data).grants
     }
 
-    private func appendPart(_ body: inout Data, boundary: String, name: String, filename: String, contentType: String, data: Data) {
-        body.append("--\(boundary)\r\n".data(using: .utf8)!)
-        body.append("Content-Disposition: form-data; name=\"\(name)\"; filename=\"\(filename)\"\r\n".data(using: .utf8)!)
-        body.append("Content-Type: \(contentType)\r\n\r\n".data(using: .utf8)!)
-        body.append(data)
-        body.append("\r\n".data(using: .utf8)!)
+    private func commitScreenshots(_ items: [CommitReqItem]) async throws {
+        var req = request("api/film/movies/\(mediaID)/screenshots/commit", method: "POST")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONEncoder().encode(CommitReq(items: items))
+        _ = try await send(req)
+    }
+
+    /// PUT bytes straight to a dock-signed provider URL (no auth header — the
+    /// signature is in the URL). This is the byte path that bypasses film-svc.
+    private func putBlob(_ urlStr: String, data: Data) async throws {
+        guard let u = URL(string: urlStr) else { throw Err("bad put_url") }
+        var req = URLRequest(url: u)
+        req.httpMethod = "PUT"
+        req.setValue("image/jpeg", forHTTPHeaderField: "Content-Type")
+        req.httpBody = data
+        let (rdata, resp) = try await URLSession.shared.data(for: req)
+        guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            throw Err("PUT \(code): \(String(data: rdata, encoding: .utf8) ?? "")")
+        }
+    }
+
+    private func withRetry(_ tries: Int = 3, _ op: @Sendable () async throws -> Void) async throws {
+        var last: Error?
+        for attempt in 0..<tries {
+            do { try await op(); return }
+            catch {
+                last = error
+                if attempt < tries - 1 {
+                    try? await Task.sleep(nanoseconds: UInt64(attempt + 1) * 500_000_000)
+                }
+            }
+        }
+        throw last ?? Err("retry exhausted")
     }
 }
