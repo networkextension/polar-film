@@ -124,6 +124,8 @@ func (p *Plugin) RegisterRoutes(r gin.IRouter) {
 			auth.PATCH("/movies/:id", p.handleMovieUpdate)
 			auth.DELETE("/movies/:id", p.handleMovieDelete)
 			auth.GET("/movies/:id/episodes", p.handleMovieEpisodes) // children (series/podcast)
+			// Fleet video processing: enqueue filmscan extract→analyze for this movie.
+			auth.POST("/movies/:id/process", p.handleMovieProcess)
 
 			// People + cast links.
 			auth.POST("/people", p.handlePersonCreate)
