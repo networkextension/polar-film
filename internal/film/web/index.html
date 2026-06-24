@@ -99,6 +99,7 @@
   <span class="chip" id="verTag">—</span>
   <span class="grow"></span>
   <button class="ghost sm" id="reindexBtn" title="为缺向量的数据补建索引">重建索引</button>
+  <button class="ghost sm" id="enrichAllBtn" title="对未富化的影片批量拉取 TMDB 元信息">🌐 批量富化</button>
   <label class="f" style="flex-direction:row;align-items:center;gap:6px">
     <span>工作区</span><select id="wsSel" style="min-width:160px"></select>
   </label>
@@ -230,6 +231,7 @@ async function boot(){
   $("#nCancel").onclick=()=>$("#newDlg").close();
   $("#nSave").onclick=createMovie;
   $("#reindexBtn").onclick=reindex;
+  $("#enrichAllBtn").onclick=enrichAll;
   $("#aCancel").onclick=()=>$("#analyzeDlg").close();
   loadLLMConfigs(); loadMovies();
 }
@@ -292,6 +294,25 @@ async function reindex(){
   catch(e){toast(e.message,"err");}
 }
 
+// M9: pull poster/backdrop/rating/cast from TMDB for one movie, then re-render.
+async function enrichMovie(id){
+  const btn=$("#enrichBtn"); if(btn){btn.disabled=true;btn.textContent="富化中…";}
+  try{
+    const r=await api(`/api/film/movies/${id}/enrich`,{method:"POST"});
+    toast(`已从 TMDB 富化 · ${r.cast_count||0} 位演职人员`,"ok");
+    await openMovie(id);
+  }catch(e){toast("富化失败:"+e.message,"err"); if(btn){btn.disabled=false;btn.textContent="🌐 TMDB 富化";}}
+}
+
+// M9: batch-backfill every un-enriched movie in the workspace (25 per call).
+async function enrichAll(){
+  try{
+    const r=await api("/api/film/movies/enrich-all",{method:"POST"});
+    toast(`批量富化:${r.ok}/${r.processed} 成功`, r.ok?"ok":"err");
+    if(state.sel) openMovie(state.sel.id);
+  }catch(e){toast("批量富化失败:"+e.message,"err");}
+}
+
 async function openMovie(id){
   document.querySelectorAll(".mvcard").forEach(c=>c.classList.remove("sel"));
   const main=$("#main");main.innerHTML='<div class="empty">加载中…</div>';
@@ -317,14 +338,30 @@ function renderMovie(m,cast,tags,subs,timeline,shotsPage){
   const tagChips=tags.map(t=>`<span class="chip ${t.source==='ai'||t.kind==='ai'?'ai':'gold'}">${esc(t.name)}</span>`).join("")||'<span class="muted">暂无</span>';
   const castRows=cast.length?cast.map(c=>`<div class="cast"><span>${esc(c.name)}</span><span class="muted">${esc(c.role||"")}${c.character?" · "+esc(c.character):""}</span></div>`).join(""):'<span class="muted">暂无</span>';
   const tlRows=timeline.length?timeline.map(b=>`<div class="beat"><span class="ts">${ms2t(b.start_ms)}</span><span><span class="ev">${esc(b.event_type)}</span>${esc(b.description)}</span></div>`).join(""):'<span class="muted">暂无,点「AI 分析」生成</span>';
+  // M9 TMDB enrichment bits.
+  const backdrop=m.backdrop_url?`<div style="width:100%;aspect-ratio:24/9;border-radius:var(--radius,10px);margin-bottom:14px;background:#0a0d13 center/cover no-repeat url('${m.backdrop_url}')"></div>`:'';
+  const poster=m.poster_url?`<img src="${m.poster_url}" alt="poster" style="width:72px;height:108px;object-fit:cover;border-radius:8px;margin-right:12px;flex:0 0 auto"/>`:'';
+  const metaRow=(k,v)=>`<div class="row" style="justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--line)"><span class="muted">${k}</span><span>${v}</span></div>`;
+  const metaBits=[
+    m.release_date?metaRow('发行日期',esc(m.release_date)):'',
+    (m.rating!=null)?metaRow('TMDB 评分',`★ ${Number(m.rating).toFixed(1)}`):'',
+    m.tagline?`<div style="padding:8px 0;font-style:italic;color:var(--mut,#8b93a7)">“${esc(m.tagline)}”</div>`:'',
+    m.enriched_at?`<div class="muted" style="font-size:11px;padding-top:4px">已富化 · ${new Date(m.enriched_at).toLocaleDateString()}</div>`:'',
+  ].filter(Boolean).join('');
+  const metaCard=metaBits?`<div class="card"><div class="hd">元数据 (TMDB)</div><div class="bd">${metaBits}</div></div>`:'';
+  const plot=m.summary||m.overview;
   main.innerHTML=`
+    ${backdrop}
     <div class="row" style="align-items:flex-start">
+      ${poster}
       <div class="grow"><h2>${esc(m.title)}</h2><p class="sub">${m.year||"—"} · ${esc(m.kind||"movie")} ${m.original_title?" · "+esc(m.original_title):""}</p></div>
+      <button class="ghost sm" id="enrichBtn">🌐 TMDB 富化</button>
       <button class="sm" id="anBtn">✨ AI 分析</button>
       <button class="ghost sm" id="simBtn">相似片</button>
       <button class="danger sm" id="delBtn">删除</button>
     </div>
-    <div class="card"><div class="hd">剧情简介</div><div class="bd" id="summaryBox">${m.summary?esc(m.summary):'<span class="muted">暂无。上传字幕后点「AI 分析」自动生成。</span>'}</div></div>
+    ${metaCard}
+    <div class="card"><div class="hd">剧情简介</div><div class="bd" id="summaryBox">${plot?esc(plot):'<span class="muted">暂无。上传字幕后点「AI 分析」自动生成，或点「TMDB 富化」拉取简介。</span>'}</div></div>
     <div class="card"><div class="hd">演职人员</div><div class="bd">${castRows}</div></div>
     <div class="card"><div class="hd">标签</div><div class="bd">${tagChips}</div></div>
     <div class="card"><div class="hd">剧情时间轴 <span class="muted" style="font-weight:400">· ${timeline.length} 节点</span></div><div class="bd">${tlRows}</div></div>
@@ -333,6 +370,7 @@ function renderMovie(m,cast,tags,subs,timeline,shotsPage){
     <div class="card hidden" id="simCard"><div class="hd">相似影片</div><div class="bd" id="simBox"></div></div>
     <div class="card hidden" id="jobCard"><div class="hd">分析进度</div><div class="bd" id="jobBox"></div></div>
   `;
+  $("#enrichBtn").onclick=()=>enrichMovie(m.id);
   $("#anBtn").onclick=()=>openAnalyze(m.id);
   $("#simBtn").onclick=()=>loadSimilar(m.id);
   $("#delBtn").onclick=()=>delMovie(m.id);
