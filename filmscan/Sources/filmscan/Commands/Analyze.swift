@@ -21,6 +21,9 @@ struct Analyze: AsyncParsableCommand {
     @Option(name: .long, help: "Workspace id (X-Workspace-Id) — for --from-manifest audio fetch.")
     var workspaceID: String?
 
+    @Option(name: .long, help: "Film movie id — with --from-manifest, push the resulting SRT to that movie.")
+    var mediaID: String?
+
     @Option(name: .shortAndLong, help: "Spoken language code.")
     var lang: String = "en"
 
@@ -134,6 +137,16 @@ struct Analyze: AsyncParsableCommand {
             .replacingOccurrences(of: "extract-manifest", with: "subtitles")
         let srtURL = outDir.appendingPathComponent("\(stem).srt")
         try Emit.srt(transcript, to: srtURL)
-        log("analyze: done → \(srtURL.path)")
+        log("analyze: emitted \(srtURL.path)")
+
+        // 5. push the SRT to the film movie (keyframes/faces were already
+        // uploaded by the extract stage). Reuses Push.swift's FilmClient.
+        if let mediaID, !mediaID.isEmpty {
+            let client = FilmClient(base: baseURL, token: tok, workspaceID: ws, mediaID: mediaID)
+            let content = try String(contentsOf: srtURL, encoding: .utf8)
+            let n = try await client.uploadSubtitle(lang: lang, content: content)
+            log("analyze: pushed subtitles to movie \(mediaID) — \(n) segments")
+        }
+        log("analyze: done")
     }
 }
