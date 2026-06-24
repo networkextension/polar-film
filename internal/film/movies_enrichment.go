@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -19,6 +20,21 @@ import (
 )
 
 const enrichCastLimit = 12 // top-billed cast attached per movie
+
+// trailingYear matches a " (1954)" suffix on a title.
+var trailingYear = regexp.MustCompile(`\s*\((\d{4})\)\s*$`)
+
+// cleanSearchTitle strips a trailing "(YYYY)" from a title for the TMDB query
+// and returns the extracted year (0 if none). "Dial M for Murder (1954)" →
+// ("Dial M for Murder", 1954).
+func cleanSearchTitle(title string) (string, int) {
+	yr := 0
+	if m := trailingYear.FindStringSubmatch(title); m != nil {
+		yr, _ = strconv.Atoi(m[1])
+		title = trailingYear.ReplaceAllString(title, "")
+	}
+	return strings.TrimSpace(title), yr
+}
 
 // ensurePerson returns the workspace's person id for this name, creating it if
 // absent (idempotent). Non-tx sibling of ensurePersonTx, for the enrich path.
@@ -39,20 +55,31 @@ func (p *Plugin) ensurePerson(ctx context.Context, wsID, name string) (string, e
 func (p *Plugin) enrichOneMovie(ctx context.Context, wsID string, m Movie) (int, error) {
 	// 1. Resolve a tmdb_id if the movie doesn't have one yet (search title+year).
 	if strings.TrimSpace(m.TmdbID) == "" {
-		title := strings.TrimSpace(m.Title)
-		if title == "" {
-			title = strings.TrimSpace(m.OriginalTitle)
+		raw := strings.TrimSpace(m.Title)
+		if raw == "" {
+			raw = strings.TrimSpace(m.OriginalTitle)
 		}
-		if title == "" {
+		if raw == "" {
 			return 0, errors.New("movie has no title to resolve against TMDB")
 		}
+		// Titles often carry the year inline ("Dial M for Murder (1954)"),
+		// which breaks the TMDB query — strip it and use it as the year hint.
+		title, titleYr := cleanSearchTitle(raw)
 		yr := 0
 		if m.Year != nil {
 			yr = *m.Year
+		} else if titleYr > 0 {
+			yr = titleYr
 		}
 		id, err := p.tmdb.searchMovie(ctx, title, yr)
 		if err != nil {
 			return 0, fmt.Errorf("tmdb search: %w", err)
+		}
+		if id == 0 && yr > 0 { // retry without the year filter (release-year drift)
+			id, err = p.tmdb.searchMovie(ctx, title, 0)
+			if err != nil {
+				return 0, fmt.Errorf("tmdb search: %w", err)
+			}
 		}
 		if id == 0 {
 			return 0, fmt.Errorf("TMDB 未找到匹配:%q (%d)", title, yr)
@@ -131,7 +158,9 @@ func (p *Plugin) handleMovieEnrich(c *gin.Context) {
 		return
 	}
 	fresh, _ := p.getMovie(ctx, wsID, id)
-	c.JSON(http.StatusOK, gin.H{"movie": p.fillMovie(ctx, fresh), "cast_count": castN})
+	out := p.fillMovie(ctx, fresh) // {movie, cast, tags}
+	out["cast_count"] = castN
+	c.JSON(http.StatusOK, out)
 }
 
 func (p *Plugin) handleMovieEnrichBatch(c *gin.Context) {
