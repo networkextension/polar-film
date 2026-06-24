@@ -131,7 +131,7 @@ struct FilmClient: Sendable {
     }
 
     private func send(_ req: URLRequest) async throws -> Data {
-        let (data, resp) = try await URLSession.shared.data(for: req)
+        let (data, resp) = try await polarSession.data(for: req)
         guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             let code = (resp as? HTTPURLResponse)?.statusCode ?? -1
             let body = String(data: data, encoding: .utf8) ?? ""
@@ -261,7 +261,7 @@ struct FilmClient: Sendable {
         req.httpMethod = "PUT"
         req.setValue("image/jpeg", forHTTPHeaderField: "Content-Type")
         req.httpBody = data
-        let (rdata, resp) = try await URLSession.shared.data(for: req)
+        let (rdata, resp) = try await polarSession.data(for: req)
         guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             let code = (resp as? HTTPURLResponse)?.statusCode ?? -1
             throw Err("PUT \(code): \(String(data: rdata, encoding: .utf8) ?? "")")

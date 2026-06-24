@@ -56,7 +56,7 @@ struct MusicClient: Sendable {
     /// the audio back when it runs on a different box than extract).
     func downloadAudio(trackID: String, to dest: URL) async throws {
         let url = try await streamURL(trackID: trackID)
-        let (tmp, resp) = try await URLSession.shared.download(from: url)
+        let (tmp, resp) = try await polarSession.download(from: url)
         guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw Err("downloadAudio HTTP \((resp as? HTTPURLResponse)?.statusCode ?? -1)")
         }

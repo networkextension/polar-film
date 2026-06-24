@@ -1,5 +1,17 @@
 import Foundation
 
+// A URLSession that bypasses the host's system proxy. filmscan's calls are
+// infra-internal (dock/music/photo/film + the assets provider); on fleet boxes a
+// system HTTP/HTTPS proxy (e.g. Surge/Clash on 127.0.0.1:port) would otherwise
+// capture them and fail ("Could not connect to the server"). curl already ignores
+// the system proxy; this makes URLSession behave the same.
+let polarSession: URLSession = {
+    let cfg = URLSessionConfiguration.default
+    cfg.connectionProxyDictionary = [:]   // empty → no proxy
+    cfg.timeoutIntervalForRequest = 600
+    return URLSession(configuration: cfg)
+}()
+
 // Shared HTTP plumbing for the Polar dock API: Bearer + X-Workspace-Id auth,
 // JSON + multipart helpers, and retry/backoff. Factored out of Commands/Push.swift's
 // FilmClient so the extract-stage clients (MusicClient, PhotoClient) reuse the exact
@@ -19,7 +31,7 @@ struct PolarHTTP: Sendable {
 
     @discardableResult
     func send(_ req: URLRequest) async throws -> Data {
-        let (data, resp) = try await URLSession.shared.data(for: req)
+        let (data, resp) = try await polarSession.data(for: req)
         guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             let code = (resp as? HTTPURLResponse)?.statusCode ?? -1
             let body = String(data: data, encoding: .utf8) ?? ""
