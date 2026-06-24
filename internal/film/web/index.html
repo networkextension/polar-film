@@ -62,7 +62,16 @@
   .beat .ts{color:var(--accent);font-family:ui-monospace,Menlo,monospace;font-size:12px;min-width:62px}
   .beat .ev{color:var(--gold);font-weight:600;margin-right:6px}
   .shots{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px}
-  .shots img{width:100%;border-radius:8px;border:1px solid var(--line);aspect-ratio:16/9;object-fit:cover;background:var(--panel2)}
+  .shots img{width:100%;border-radius:8px;border:1px solid var(--line);aspect-ratio:16/9;object-fit:cover;background:var(--panel2);cursor:zoom-in;transition:border-color .15s,transform .15s}
+  .shots img:hover{border-color:var(--accent);transform:translateY(-1px)}
+  .shots-more{height:1px}
+  .lb{position:fixed;inset:0;background:rgba(0,0,0,.92);display:flex;align-items:center;justify-content:center;z-index:100}
+  .lb img{max-width:92vw;max-height:86vh;border-radius:8px;box-shadow:0 10px 50px rgba(0,0,0,.6);background:var(--panel2)}
+  .lb .nav{position:absolute;top:50%;transform:translateY(-50%);font-size:34px;line-height:1;color:#fff;background:rgba(0,0,0,.35);border:none;border-radius:10px;padding:6px 16px;cursor:pointer;user-select:none}
+  .lb .nav:hover{background:rgba(0,0,0,.65)}
+  .lb .prev{left:18px}.lb .next{right:18px}
+  .lb .close{position:absolute;top:16px;right:20px;font-size:22px;color:#fff;background:none;border:none;cursor:pointer}
+  .lb .cap{position:absolute;bottom:18px;left:0;right:0;text-align:center;color:var(--mut);font-family:ui-monospace,Menlo,monospace;font-size:13px}
   .seg{padding:6px 0;border-bottom:1px solid var(--line);font-size:13px;display:flex;gap:10px}
   .seg:last-child{border:none}
   .seg .ts{color:var(--mut);font-family:ui-monospace,Menlo,monospace;font-size:11px;min-width:90px}
@@ -122,6 +131,7 @@
   <span class="chip" id="verTag">—</span>
   <span class="grow"></span>
   <button class="ghost sm" id="reindexBtn" title="为缺向量的数据补建索引">重建索引</button>
+  <button class="ghost sm" id="enrichAllBtn" title="对未富化的影片批量拉取 TMDB 元信息">🌐 批量富化</button>
   <label class="f" style="flex-direction:row;align-items:center;gap:6px">
     <span>工作区</span><select id="wsSel" style="min-width:160px"></select>
   </label>
@@ -367,6 +377,7 @@ async function boot(){
   $("#nCancel").onclick=()=>$("#newDlg").close();
   $("#nSave").onclick=createMovie;
   $("#reindexBtn").onclick=reindex;
+  $("#enrichAllBtn").onclick=enrichAll;
   $("#aCancel").onclick=()=>$("#analyzeDlg").close();
   // lightbox controls (DOM is static; bind once)
   $("#lbClose").onclick=closeLightbox;
@@ -461,6 +472,25 @@ async function reindex(){
   catch(e){toast(e.message,"err");}
 }
 
+// M9: pull poster/backdrop/rating/cast from TMDB for one movie, then re-render.
+async function enrichMovie(id){
+  const btn=$("#enrichBtn"); if(btn){btn.disabled=true;btn.textContent="富化中…";}
+  try{
+    const r=await api(`/api/film/movies/${id}/enrich`,{method:"POST"});
+    toast(`已从 TMDB 富化 · ${r.cast_count||0} 位演职人员`,"ok");
+    await openMovie(id);
+  }catch(e){toast("富化失败:"+e.message,"err"); if(btn){btn.disabled=false;btn.textContent="🌐 TMDB 富化";}}
+}
+
+// M9: batch-backfill every un-enriched movie in the workspace (25 per call).
+async function enrichAll(){
+  try{
+    const r=await api("/api/film/movies/enrich-all",{method:"POST"});
+    toast(`批量富化:${r.ok}/${r.processed} 成功`, r.ok?"ok":"err");
+    if(state.sel) openMovie(state.sel.id);
+  }catch(e){toast("批量富化失败:"+e.message,"err");}
+}
+
 async function openMovie(id){
   document.querySelectorAll(".mvcard").forEach(c=>c.classList.remove("sel"));
   const main=$("#main");main.innerHTML='<div class="empty">加载中…</div>';
@@ -471,35 +501,55 @@ async function openMovie(id){
     const [subs,tl,shots]=await Promise.all([
       api(`/api/film/movies/${id}/subtitles`).catch(()=>({subtitles:[]})),
       api(`/api/film/movies/${id}/timeline`).catch(()=>({timeline:[]})),
-      api(`/api/film/movies/${id}/screenshots`).catch(()=>({screenshots:[]})),
+      api(`/api/film/movies/${id}/screenshots?limit=60`).catch(()=>({screenshots:[]})),
     ]);
-    renderMovie(m,cast,tags,subs.subtitles||[],tl.timeline||[],shots.screenshots||[]);
+    renderMovie(m,cast,tags,subs.subtitles||[],tl.timeline||[],shots);
     document.querySelectorAll(".mvcard").forEach(c=>{});
   }catch(e){main.innerHTML=`<div class="empty">加载失败:${esc(e.message)}</div>`;}
 }
 
-function renderMovie(m,cast,tags,subs,timeline,shots){
+function renderMovie(m,cast,tags,subs,timeline,shotsPage){
   const main=$("#main");
+  const shots=shotsPage.screenshots||[];
+  const total=shotsPage.total??shots.length;
+  const pageSize=shotsPage.limit||60;
   const tagChips=tags.map(t=>`<span class="chip ${t.source==='ai'||t.kind==='ai'?'ai':'gold'}">${esc(t.name)}</span>`).join("")||'<span class="muted">暂无</span>';
   const castRows=cast.length?cast.map(c=>`<div class="cast"><span>${esc(c.name)}</span><span class="muted">${esc(c.role||"")}${c.character?" · "+esc(c.character):""}</span></div>`).join(""):'<span class="muted">暂无</span>';
   const tlRows=timeline.length?timeline.map(b=>`<div class="beat"><span class="ts">${ms2t(b.start_ms)}</span><span><span class="ev">${esc(b.event_type)}</span>${esc(b.description)}</span></div>`).join(""):'<span class="muted">暂无,点「AI 分析」生成</span>';
+  // M9 TMDB enrichment bits.
+  const backdrop=m.backdrop_url?`<div style="width:100%;aspect-ratio:24/9;border-radius:var(--radius,10px);margin-bottom:14px;background:#0a0d13 center/cover no-repeat url('${m.backdrop_url}')"></div>`:'';
+  const poster=m.poster_url?`<img src="${m.poster_url}" alt="poster" style="width:72px;height:108px;object-fit:cover;border-radius:8px;margin-right:12px;flex:0 0 auto"/>`:'';
+  const metaRow=(k,v)=>`<div class="row" style="justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--line)"><span class="muted">${k}</span><span>${v}</span></div>`;
+  const metaBits=[
+    m.release_date?metaRow('发行日期',esc(m.release_date)):'',
+    (m.rating!=null)?metaRow('TMDB 评分',`★ ${Number(m.rating).toFixed(1)}`):'',
+    m.tagline?`<div style="padding:8px 0;font-style:italic;color:var(--mut,#8b93a7)">“${esc(m.tagline)}”</div>`:'',
+    m.enriched_at?`<div class="muted" style="font-size:11px;padding-top:4px">已富化 · ${new Date(m.enriched_at).toLocaleDateString()}</div>`:'',
+  ].filter(Boolean).join('');
+  const metaCard=metaBits?`<div class="card"><div class="hd">元数据 (TMDB)</div><div class="bd">${metaBits}</div></div>`:'';
+  const plot=m.summary||m.overview;
   main.innerHTML=`
+    ${backdrop}
     <div class="row" style="align-items:flex-start">
+      ${poster}
       <div class="grow"><h2>${esc(m.title)}</h2><p class="sub">${m.year||"—"} · ${esc(m.kind||"movie")} ${m.original_title?" · "+esc(m.original_title):""}</p></div>
+      <button class="ghost sm" id="enrichBtn">🌐 TMDB 富化</button>
       <button class="sm" id="anBtn">✨ AI 分析</button>
       <button class="ghost sm" id="simBtn">相似片</button>
       <button class="danger sm" id="delBtn">删除</button>
     </div>
-    <div class="card"><div class="hd">剧情简介</div><div class="bd" id="summaryBox">${m.summary?esc(m.summary):'<span class="muted">暂无。上传字幕后点「AI 分析」自动生成。</span>'}</div></div>
+    ${metaCard}
+    <div class="card"><div class="hd">剧情简介</div><div class="bd" id="summaryBox">${plot?esc(plot):'<span class="muted">暂无。上传字幕后点「AI 分析」自动生成，或点「TMDB 富化」拉取简介。</span>'}</div></div>
     <div class="card"><div class="hd">演职人员</div><div class="bd">${castRows}</div></div>
     <div class="card"><div class="hd">人物 <span class="muted" style="font-weight:400" id="faceCount"></span><span class="grow"></span><button class="ghost sm" id="newPersonBtn">+ 人物</button><button class="ghost sm hidden" id="mergeBtn">合并选中</button></div><div class="bd"><div id="faceSuggest"></div><div class="facewall" id="faceWall"><span class="muted">加载中…</span></div></div></div>
     <div class="card"><div class="hd">标签</div><div class="bd">${tagChips}</div></div>
     <div class="card"><div class="hd">剧情时间轴 <span class="muted" style="font-weight:400">· ${timeline.length} 节点</span></div><div class="bd">${tlRows}</div></div>
     <div class="card"><div class="hd">字幕 <span class="grow"></span><button class="ghost sm" id="upSubBtn">上传字幕</button></div><div class="bd" id="subBox">${subs.length?subs.map(s=>`<div class="row" style="justify-content:space-between"><span>${esc(s.lang)} · ${esc(s.format)}</span><button class="ghost sm" data-sub="${s.id}">查看台词</button></div>`).join(""):'<span class="muted">暂无字幕</span>'}</div></div>
-    <div class="card"><div class="hd">截图 <span class="muted" style="font-weight:400">· ${shots.length}</span></div><div class="bd"><div class="shots" id="shotBox">${shots.length?'':'<span class="muted">暂无截图</span>'}</div></div></div>
+    <div class="card"><div class="hd">截图 <span class="muted" style="font-weight:400">· ${total}</span></div><div class="bd"><div class="shots" id="shotBox">${total?'':'<span class="muted">暂无截图</span>'}</div><div class="shots-more" id="shotMore"></div></div></div>
     <div class="card hidden" id="simCard"><div class="hd">相似影片</div><div class="bd" id="simBox"></div></div>
     <div class="card hidden" id="jobCard"><div class="hd">分析进度</div><div class="bd" id="jobBox"></div></div>
   `;
+  $("#enrichBtn").onclick=()=>enrichMovie(m.id);
   $("#anBtn").onclick=()=>openAnalyze(m.id);
   $("#simBtn").onclick=()=>loadSimilar(m.id);
   $("#delBtn").onclick=()=>delMovie(m.id);

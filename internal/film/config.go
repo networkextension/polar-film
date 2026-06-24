@@ -20,4 +20,9 @@ type Config struct {
 	EmbedModel   string // POLAR_FILM_EMBED_MODEL — e.g. bge-m3
 	EmbedDim     int    // POLAR_FILM_EMBED_DIM — must match schema vector(N); default 1024
 	EmbedAPIKey  string // POLAR_FILM_EMBED_API_KEY — optional (ollama ignores)
+
+	// TMDB metadata enrichment (M9). Empty TMDBToken → /enrich endpoints 503.
+	// Token is TMDB's v4 "API Read Access Token" (a long JWT), sent as a Bearer.
+	TMDBToken   string // POLAR_FILM_TMDB_TOKEN
+	TMDBBaseURL string // POLAR_FILM_TMDB_BASE_URL — default https://api.themoviedb.org/3
 }

@@ -36,6 +36,7 @@ type Plugin struct {
 
 	dockLLM   *sdk.Client // M5: separate client w/ long timeout for LLM completions
 	embedder  Embedder    // M4 semantic search backend (ollama / offline fallback)
+	tmdb      *tmdbClient // M9: TMDB metadata enrichment (nil-safe; .enabled() gates)
 	metrics   *filmMetrics
 	startedAt time.Time
 }
@@ -96,6 +97,7 @@ func New(ctx context.Context, cfg Config) (*Plugin, error) {
 		PublicURL:  strings.TrimRight(strings.TrimSpace(cfg.PublicBaseURL), "/"),
 		dockLLM:    dockLLM,
 		embedder:   newEmbedder(cfg),
+		tmdb:       newTMDBClient(cfg.TMDBBaseURL, cfg.TMDBToken),
 		metrics:    newFilmMetrics(),
 		startedAt:  time.Now(),
 	}, nil
@@ -124,6 +126,11 @@ func (p *Plugin) RegisterRoutes(r gin.IRouter) {
 			auth.PATCH("/movies/:id", p.handleMovieUpdate)
 			auth.DELETE("/movies/:id", p.handleMovieDelete)
 			auth.GET("/movies/:id/episodes", p.handleMovieEpisodes) // children (series/podcast)
+			// Fleet video processing: enqueue filmscan extract→analyze for this movie.
+			auth.POST("/movies/:id/process", p.handleMovieProcess)
+			// M9 TMDB metadata enrichment: one movie, or backfill un-enriched.
+			auth.POST("/movies/enrich-all", p.handleMovieEnrichBatch)
+			auth.POST("/movies/:id/enrich", p.handleMovieEnrich)
 
 			// People + cast links.
 			auth.POST("/people", p.handlePersonCreate)

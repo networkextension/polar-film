@@ -34,6 +34,8 @@ func main() {
 		EmbedModel:    envOrDefault("POLAR_FILM_EMBED_MODEL", "bge-m3"),
 		EmbedDim:      envIntOrDefault("POLAR_FILM_EMBED_DIM", 1024),
 		EmbedAPIKey:   os.Getenv("POLAR_FILM_EMBED_API_KEY"),
+		TMDBToken:     os.Getenv("POLAR_FILM_TMDB_TOKEN"),
+		TMDBBaseURL:   envOrDefault("POLAR_FILM_TMDB_BASE_URL", "https://api.themoviedb.org/3"),
 	}
 	if strings.TrimSpace(cfg.PluginToken) == "" {
 		log.Fatal("POLAR_PLUGIN_TOKEN unset — get plaintext from /admin-plugins.html")
