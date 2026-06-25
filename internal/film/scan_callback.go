@@ -23,12 +23,15 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// extractOutput is the result shape the agent's film.extract skill returns
-// (P1b defines it; kept minimal — only what analyze + chaining needs).
+// extractOutput is the result shape the agent's film.extract skill returns.
+// The manifest itself rides back as a "manifest" artifact (asset + download_url),
+// since the agent runner only uploads artifacts AFTER the skill returns — so the
+// asset id can't be in the result. forward_token is echoed so we can hand it to
+// the analyze stage (which must fetch the audio back from the music library).
 type extractOutput struct {
-	AudioTrackID    string `json:"audio_track_id"`
-	ManifestAssetID int64  `json:"manifest_asset_id"`
-	KeyframeCount   int    `json:"keyframe_count"`
+	AudioTrackID string `json:"audio_track_id"`
+	ForwardToken string `json:"forward_token"`
+	KeyframeCount int   `json:"keyframe_count"`
 }
 
 // POST /internal/v1/film/scan-callback (signed by dock).
@@ -68,12 +71,21 @@ func (p *Plugin) handleScanCallback(c *gin.Context) {
 		case "film.extract":
 			var out extractOutput
 			_ = json.Unmarshal(payload.Result, &out)
+			// The manifest (with the music-lib audio track id) comes back as an
+			// artifact; the analyze stage pulls it + the audio it points at.
+			manifest := pickArtifact(payload.Artifacts, "manifest")
+			if manifest == nil || manifest.DownloadURL == "" {
+				_, _ = p.setScanStatus(ctx, ws, mediaID, "failed", "extract 无 manifest 产物")
+				return
+			}
 			_, _ = p.setScanStatus(ctx, ws, mediaID, "extracted", "转写排队")
-			// Chain the ANE analyze stage (arm64 + Neural Engine only).
+			// Chain the ANE analyze stage (arm64 + Neural Engine only). It fetches
+			// the audio back from the music library, so it needs the user's token.
 			input, _ := json.Marshal(map[string]any{
-				"media_id":          mediaID,
-				"audio_track_id":    out.AudioTrackID,
-				"manifest_asset_id": out.ManifestAssetID,
+				"media_id":      mediaID,
+				"manifest_url":  manifest.DownloadURL,
+				"workspace_id":  ws,
+				"forward_token": out.ForwardToken,
 			})
 			constraints, _ := json.Marshal(map[string]any{"required_arch": "arm64", "needs_ane": true})
 			if _, err := p.Dock.SubmitComputeTask(sdk.SubmitComputeTaskRequest{
