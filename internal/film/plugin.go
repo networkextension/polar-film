@@ -40,6 +40,11 @@ type Plugin struct {
 	hmacKey   []byte      // P1a: verify dock's signed scan-callback (DeriveHMACKey)
 	metrics   *filmMetrics
 	startedAt time.Time
+
+	// Identity feed (声纹/face) — s2s push of voiceprints + face prints.
+	identityBase  string
+	identityToken string
+	httpc         *http.Client
 }
 
 func New(ctx context.Context, cfg Config) (*Plugin, error) {
@@ -102,6 +107,10 @@ func New(ctx context.Context, cfg Config) (*Plugin, error) {
 		hmacKey:    sdk.DeriveHMACKey(cfg.PluginToken),
 		metrics:    newFilmMetrics(),
 		startedAt:  time.Now(),
+
+		identityBase:  strings.TrimRight(strings.TrimSpace(cfg.IdentityBase), "/"),
+		identityToken: strings.TrimSpace(cfg.IdentityToken),
+		httpc:         &http.Client{Timeout: 30 * time.Second},
 	}, nil
 }
 

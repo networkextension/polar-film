@@ -36,6 +36,8 @@ func main() {
 		EmbedAPIKey:   os.Getenv("POLAR_FILM_EMBED_API_KEY"),
 		TMDBToken:     os.Getenv("POLAR_FILM_TMDB_TOKEN"),
 		TMDBBaseURL:   envOrDefault("POLAR_FILM_TMDB_BASE_URL", "https://api.themoviedb.org/3"),
+		IdentityBase:  envOrDefault("POLAR_IDENTITY_BASE", "http://127.0.0.1:8112"),
+		IdentityToken: os.Getenv("POLAR_IDENTITY_INTERNAL_TOKEN"),
 	}
 	if strings.TrimSpace(cfg.PluginToken) == "" {
 		log.Fatal("POLAR_PLUGIN_TOKEN unset — get plaintext from /admin-plugins.html")
