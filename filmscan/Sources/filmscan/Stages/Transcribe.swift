@@ -7,13 +7,18 @@ import CoreML
 // feed the video path directly. NOTE: AVFoundation can't read Matroska (.mkv) —
 // those need an explicit demux first (P1).
 enum Transcribe {
-    static func run(videoURL: URL, samples: [Float], lang: String, model: String, modelFolder: String? = nil, compute: String = "default") async throws -> Transcript {
-        var config = WhisperKitConfig(model: model, modelFolder: modelFolder)
+    static func run(videoURL: URL, samples: [Float], lang: String, model: String, modelFolder: String? = nil, tokenizerFolder: String? = nil, compute: String = "default") async throws -> Transcript {
+        // tokenizerFolder: a HuggingFace hub base (…/huggingface) holding the
+        // pre-downloaded tokenizer at models/openai/whisper-<model>/. WhisperKit's
+        // loadTokenizer checks it before reaching HF — essential under launchd
+        // (where the default documentsDirectory cache isn't found) + offline hosts.
+        let tokURL = tokenizerFolder.map { URL(fileURLWithPath: $0) }
+        var config = WhisperKitConfig(model: model, modelFolder: modelFolder, tokenizerFolder: tokURL)
         if let units = computeUnits(compute) {
             // Force the compute path — Neural Engine (the default for the text
             // decoder) produces garbage tokens on some hosts (macOS 14.0); CPU is
             // deterministic. See --compute.
-            config = WhisperKitConfig(model: model, modelFolder: modelFolder,
+            config = WhisperKitConfig(model: model, modelFolder: modelFolder, tokenizerFolder: tokURL,
                 computeOptions: ModelComputeOptions(melCompute: units, audioEncoderCompute: units,
                                                     textDecoderCompute: units, prefillCompute: units))
         }

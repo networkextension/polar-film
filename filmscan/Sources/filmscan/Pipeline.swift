@@ -11,6 +11,7 @@ struct Pipeline {
     let lang: String
     let model: String
     var modelFolder: String? = nil
+    var tokenizerFolder: String? = nil
     var frameIntervalSec: Double = 2.0
     var compute: String = "default"
     var diarize: Bool = true
@@ -62,7 +63,7 @@ struct Pipeline {
             do {
                 let samples = try await loadSamples()
                 log("transcribe: WhisperKit \(model) …")
-                let t = try await Transcribe.run(videoURL: videoURL, samples: samples, lang: lang, model: model, modelFolder: modelFolder, compute: compute)
+                let t = try await Transcribe.run(videoURL: videoURL, samples: samples, lang: lang, model: model, modelFolder: modelFolder, tokenizerFolder: tokenizerFolder, compute: compute)
                 try saveJSON(t, to: transcriptURL)
                 log("transcribe: \(t.segments.count) segments")
                 transcript = t

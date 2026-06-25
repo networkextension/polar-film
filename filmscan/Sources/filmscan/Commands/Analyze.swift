@@ -33,6 +33,9 @@ struct Analyze: AsyncParsableCommand {
     @Option(name: .long, help: "Path to a pre-downloaded WhisperKit model folder (skips the HF download).")
     var modelFolder: String?
 
+    @Option(name: .long, help: "HuggingFace hub base (…/huggingface) with the pre-downloaded tokenizer; loaded locally so WhisperKit never reaches HF (needed under launchd / offline).")
+    var tokenizerFolder: String?
+
     @Option(name: .long, help: "Keyframe sampling interval in seconds.")
     var frameInterval: Double = 2.0
 
@@ -66,7 +69,8 @@ struct Analyze: AsyncParsableCommand {
         try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
 
         let pipeline = Pipeline(videoURL: videoURL, outDir: outDir, lang: lang, model: model,
-                                modelFolder: modelFolder, frameIntervalSec: frameInterval, compute: compute,
+                                modelFolder: modelFolder, tokenizerFolder: tokenizerFolder,
+                                frameIntervalSec: frameInterval, compute: compute,
                                 diarize: diarize, diarModels: diarModels)
         try await pipeline.run()
     }
@@ -110,7 +114,8 @@ struct Analyze: AsyncParsableCommand {
         log("analyze: WhisperKit \(model) …")
         var transcript = try await Transcribe.run(videoURL: audioURL, samples: samples,
                                                   lang: lang, model: model,
-                                                  modelFolder: modelFolder, compute: compute)
+                                                  modelFolder: modelFolder, tokenizerFolder: tokenizerFolder,
+                                                  compute: compute)
         try saveJSON(transcript, to: outDir.appendingPathComponent("transcript.json"))
         log("analyze: \(transcript.segments.count) segments")
 
