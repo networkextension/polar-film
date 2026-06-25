@@ -29,6 +29,9 @@ struct Extract: AsyncParsableCommand {
     @Option(name: .long, help: "Workspace id (X-Workspace-Id); omit for personal.")
     var workspaceID: String?
 
+    @Option(name: .long, help: "Film movie id — keyframes upload to its screenshots (central assets) for identity face refs.")
+    var mediaID: String?
+
     @Option(name: .long, help: "Keyframe sampling interval in seconds.")
     var frameInterval: Double = 2.0
 
@@ -62,6 +65,7 @@ struct Extract: AsyncParsableCommand {
 
         // ── audio → music library ───────────────────────────────────
         var audioTrackID: String? = nil
+        var audioAssetID: Int64? = nil
         var audioDurationMs = 0
         if !noAudio {
             log("audio: exporting .m4a …")
@@ -69,8 +73,10 @@ struct Extract: AsyncParsableCommand {
                 audioDurationMs = res.durationMs
                 let music = MusicClient(base: baseURL, token: tok, workspaceID: workspaceID)
                 log("audio: uploading to music library …")
-                audioTrackID = try await music.uploadTrack(fileURL: res.url, durationMs: res.durationMs, title: mediaName)
-                log("audio: track \(audioTrackID ?? "?") (\(audioDurationMs / 1000)s)")
+                let (tid, aid) = try await music.uploadTrack(fileURL: res.url, durationMs: res.durationMs, title: mediaName)
+                audioTrackID = tid
+                audioAssetID = aid
+                log("audio: track \(audioTrackID ?? "?") asset \(audioAssetID.map(String.init) ?? "?") (\(audioDurationMs / 1000)s)")
             } else {
                 log("audio: no audio track — skipping")
             }
@@ -102,13 +108,15 @@ struct Extract: AsyncParsableCommand {
             log("faces: \(faces.faces.count) faces → \(faces.clusterCount) clusters")
         }
 
-        // ── keyframes → photo library ───────────────────────────────
-        var uploaded: [UploadedFrame] = []
-        if !noKeyframes, !frames.frames.isEmpty {
-            let photo = PhotoClient(base: baseURL, token: tok, workspaceID: workspaceID)
-            log("keyframes: uploading \(frames.frames.count) to photo library …")
-            uploaded = try await uploadFrames(frames.frames, baseDir: outDir, photo: photo)
-            log("keyframes: \(uploaded.count) uploaded")
+        // ── keyframes → film screenshots (central polar-assets; film owns them,
+        //    has ts_ms + asset_id → identity face samples reference the frame) ──
+        if !noKeyframes, !frames.frames.isEmpty, let mid = mediaID, !mid.isEmpty {
+            let film = FilmClient(base: baseURL, token: tok, workspaceID: workspaceID, mediaID: mid)
+            log("keyframes: uploading \(frames.frames.count) to film screenshots …")
+            let r = try await film.uploadKeyframes(frames.frames, baseDir: outDir)
+            log("keyframes: \(r.uploaded) uploaded, \(r.deduped) deduped → film screenshots")
+        } else if !noKeyframes {
+            log("keyframes: no --media-id → kept local (no upload)")
         }
 
         // ── emit manifest ───────────────────────────────────────────
@@ -117,40 +125,15 @@ struct Extract: AsyncParsableCommand {
             media: media,
             workspaceID: workspaceID,
             audioTrackID: audioTrackID,
+            audioAssetID: audioAssetID,
             audioDurationMs: audioDurationMs,
-            frames: uploaded,
+            frames: [],   // keyframes live in film screenshots (queried by ts_ms), not the manifest
             faces: faces.faces.map { ManifestFace(timeMs: $0.timeMs, box: $0.box, cluster: $0.cluster, embedding: $0.embedding) },
             clusterCount: faces.clusterCount
         )
         let manifestURL = outDir.appendingPathComponent("extract-manifest.json")
         try saveJSON(manifest, to: manifestURL)
         log("extract: done → \(manifestURL.path)")
-    }
-
-    /// Upload keyframe JPEGs to the photo library, bounded-concurrent, preserving
-    /// frame order in the returned manifest entries.
-    private func uploadFrames(_ frames: [Frame], baseDir: URL, photo: PhotoClient, concurrency: Int = 6) async throws -> [UploadedFrame] {
-        var result = [UploadedFrame?](repeating: nil, count: frames.count)
-        var i = 0
-        while i < frames.count {
-            let chunk = Array(frames[i..<min(i + concurrency, frames.count)])
-            let offset = i
-            try await withThrowingTaskGroup(of: (Int, String).self) { group in
-                for (k, f) in chunk.enumerated() {
-                    let url = baseDir.appendingPathComponent(f.file)
-                    group.addTask {
-                        let id = try await photo.uploadKeyframe(fileURL: url)
-                        return (offset + k, id)
-                    }
-                }
-                for try await (idx, id) in group {
-                    result[idx] = UploadedFrame(idx: frames[idx].idx, timeMs: frames[idx].timeMs, assetID: id)
-                }
-            }
-            i += concurrency
-            log("keyframes:   \(min(i, frames.count))/\(frames.count) uploaded")
-        }
-        return result.compactMap { $0 }
     }
 
     /// Best-effort probe of the source video's shape for the manifest.

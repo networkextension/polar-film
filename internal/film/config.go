@@ -25,4 +25,12 @@ type Config struct {
 	// Token is TMDB's v4 "API Read Access Token" (a long JWT), sent as a Bearer.
 	TMDBToken   string // POLAR_FILM_TMDB_TOKEN
 	TMDBBaseURL string // POLAR_FILM_TMDB_BASE_URL — default https://api.themoviedb.org/3
+
+	// Identity (声纹/face 建模) — film feeds voiceprints + face prints here
+	// (mirrors lawyer). Empty → identity push is skipped (best-effort).
+	IdentityBase  string // POLAR_IDENTITY_BASE — e.g. http://127.0.0.1:8112
+	IdentityToken string // POLAR_IDENTITY_INTERNAL_TOKEN — s2s internal token
+	// DiarizeModelFolder is the FluidAudio model dir ON THE AGENT that runs
+	// speech.diarize (passed through in the task input). e.g. /Users/local/diar-models.
+	DiarizeModelFolder string // POLAR_FILM_DIARIZE_MODEL_FOLDER
 }

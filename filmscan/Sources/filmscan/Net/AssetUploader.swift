@@ -90,3 +90,21 @@ func extractID(_ data: Data, wrapperKeys: [String]) -> String? {
     }
     return nil
 }
+
+/// Pull an Int64 field (e.g. "audio_asset_id") out of a JSON object, tolerating a
+/// top-level field or a wrapper like {"track": {...}}. Numeric server-side.
+func extractInt64Field(_ data: Data, wrapperKeys: [String], field: String) -> Int64? {
+    guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+    func val(_ obj: [String: Any]) -> Int64? {
+        if let n = obj[field] as? Int64 { return n }
+        if let n = obj[field] as? Int { return Int64(n) }
+        if let d = obj[field] as? Double { return Int64(d) }
+        if let s = obj[field] as? String { return Int64(s) }
+        return nil
+    }
+    if let n = val(root) { return n }
+    for k in wrapperKeys {
+        if let sub = root[k] as? [String: Any], let n = val(sub) { return n }
+    }
+    return nil
+}

@@ -116,6 +116,9 @@ struct ExtractManifest: Codable {
     var workspaceID: String?
     /// music-library track id for the extracted audio (nil if the video had none).
     var audioTrackID: String?
+    /// central-assets id for the audio bytes — the identity/diarize pipeline
+    /// references it (the recording asset for voiceprint samples).
+    var audioAssetID: Int64?
     var audioDurationMs: Int
     var frames: [UploadedFrame]
     var faces: [ManifestFace]

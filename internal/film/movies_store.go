@@ -39,6 +39,14 @@ type Movie struct {
 	Tagline     string     `json:"tagline,omitempty"`
 	Overview    string     `json:"overview,omitempty"` // TMDB plot; distinct from user Summary
 	EnrichedAt  *time.Time `json:"enriched_at,omitempty"`
+
+	// --- filmscan processing status (M10). Surfaced as a 处理中 chip on the
+	// movie page so an operator can see which stage a scan is at. Driven by
+	// the filmscan orchestration POSTing /scan-status, and auto-set to "done"
+	// when subtitles land. ---
+	ScanStatus    string     `json:"scan_status,omitempty"`     // ""|extracting|extracted|analyzing|done|failed
+	ScanDetail    string     `json:"scan_detail,omitempty"`     // free text, e.g. "转写中" / "2491 帧"
+	ScanUpdatedAt *time.Time `json:"scan_updated_at,omitempty"`
 }
 
 func nullInt(p *int) any {
@@ -89,18 +97,20 @@ func scanTimePtr(t sql.NullTime) *time.Time {
 
 const movieCols = `id, workspace_id, kind, title, original_title, year, country, language,
 	runtime_min, summary, poster_asset_id, imdb_id, douban_id, tmdb_id, parent_id, created_by, created_at,
-	release_date, rating, backdrop_url, poster_url, tagline, overview, enriched_at`
+	release_date, rating, backdrop_url, poster_url, tagline, overview, enriched_at,
+	scan_status, scan_detail, scan_updated_at`
 
 func scanMovie(row interface{ Scan(...any) error }) (Movie, error) {
 	var m Movie
 	var year, runtime sql.NullInt64
-	var parentID, backdrop, posterURL, tagline, overview sql.NullString
-	var releaseDate, enrichedAt sql.NullTime
+	var parentID, backdrop, posterURL, tagline, overview, scanStatus, scanDetail sql.NullString
+	var releaseDate, enrichedAt, scanUpdatedAt sql.NullTime
 	var rating sql.NullFloat64
 	err := row.Scan(&m.ID, &m.WorkspaceID, &m.Kind, &m.Title, &m.OriginalTitle, &year,
 		&m.Country, &m.Language, &runtime, &m.Summary, &m.PosterAssetID,
 		&m.ImdbID, &m.DoubanID, &m.TmdbID, &parentID, &m.CreatedBy, &m.CreatedAt,
-		&releaseDate, &rating, &backdrop, &posterURL, &tagline, &overview, &enrichedAt)
+		&releaseDate, &rating, &backdrop, &posterURL, &tagline, &overview, &enrichedAt,
+		&scanStatus, &scanDetail, &scanUpdatedAt)
 	if err != nil {
 		return Movie{}, err
 	}
@@ -117,7 +127,40 @@ func scanMovie(row interface{ Scan(...any) error }) (Movie, error) {
 	m.Tagline = tagline.String
 	m.Overview = overview.String
 	m.EnrichedAt = scanTimePtr(enrichedAt)
+	m.ScanStatus = scanStatus.String
+	m.ScanDetail = scanDetail.String
+	m.ScanUpdatedAt = scanTimePtr(scanUpdatedAt)
 	return m, nil
+}
+
+// setScanStatus upserts the filmscan processing status for a movie. status ""
+// clears it; detail is free text. Stamps scan_updated_at. Used by the
+// /scan-status endpoint + the auto-set-on-subtitle path.
+func (p *Plugin) setScanStatus(ctx context.Context, wsID, id, status, detail string) (bool, error) {
+	res, err := p.DB.ExecContext(ctx, `
+		UPDATE media_items SET scan_status=NULLIF($3,''), scan_detail=NULLIF($4,''), scan_updated_at=now()
+		WHERE workspace_id=$1 AND id=$2`, wsID, id, status, detail)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// setMediaAudioAsset stamps the movie's extracted-audio asset id (m11) — the
+// recording the film→identity voiceprint pipeline diarizes.
+func (p *Plugin) setMediaAudioAsset(ctx context.Context, wsID, id string, assetID int64) error {
+	_, err := p.DB.ExecContext(ctx,
+		`UPDATE media_items SET audio_asset_id=$3 WHERE workspace_id=$1 AND id=$2`, wsID, id, assetID)
+	return err
+}
+
+// mediaAudioAsset resolves a movie's workspace + extracted-audio asset id (the
+// diarize callback is dock-signed, not user-scoped, so it looks up by id).
+func (p *Plugin) mediaAudioAsset(ctx context.Context, id string) (ws string, assetID int64, err error) {
+	err = p.DB.QueryRowContext(ctx,
+		`SELECT workspace_id, audio_asset_id FROM media_items WHERE id=$1`, id).Scan(&ws, &assetID)
+	return ws, assetID, err
 }
 
 // updateMovieEnrichment writes only the M9 TMDB columns + stamps enriched_at.
