@@ -185,6 +185,32 @@ func (p *Plugin) RegisterRoutes(r gin.IRouter) {
 			auth.GET("/movies/:id/screenshots", p.handleScreenshotList)
 			auth.GET("/screenshots/:scId/url", p.handleScreenshotURL)
 			auth.DELETE("/screenshots/:scId", p.handleScreenshotDelete)
+
+			// NOTE: the block below was dropped by 6f4a6b7 (P1a commit) and restored
+			// here — direct-PUT screenshots + face curation (PF-10..14) + people ops.
+			auth.PATCH("/people/:id", p.handlePersonUpdate)
+			auth.DELETE("/people/:id", p.handlePersonDelete)
+			auth.POST("/people/:id/merge", p.handlePersonMerge)
+			// Per-person navigation + EDL/timecode export (PF-13).
+			auth.GET("/movies/:id/people/:personId/appearances", p.handlePersonAppearances)
+			auth.GET("/movies/:id/people/:personId/export", p.handlePersonExport)
+			// Direct-to-storage keyframe upload (grants + commit; bytes skip film-svc).
+			auth.POST("/movies/:id/screenshots/grants", p.handleScreenshotGrants)
+			auth.POST("/movies/:id/screenshots/commit", p.handleScreenshotCommit)
+			// Face clusters (PF-10 curation P0): upload from filmscan + read.
+			auth.POST("/movies/:id/faces", p.handleFacesUpload)
+			auth.GET("/movies/:id/face-clusters", p.handleFaceClusterList)
+			auth.GET("/face-clusters/:cid/faces", p.handleFaceClusterFaces)
+			// Face re-ID over per-face embedding (PF-14): suggestions / similar / cross-film.
+			auth.GET("/movies/:id/face-suggestions", p.handleFaceSuggestions)
+			auth.GET("/movies/:id/faces/:faceId/similar", p.handleFaceSimilar)
+			auth.GET("/people/:id/cross-film", p.handlePersonCrossFilm)
+			// Face curation (PF-11): merge/remove/split/assign (route through :cid).
+			auth.POST("/movies/:id/face-clusters/:cid/merge", p.handleClusterMerge)
+			auth.POST("/movies/:id/face-clusters/:cid/faces/remove", p.handleClusterFacesRemove)
+			auth.POST("/movies/:id/face-clusters/:cid/faces/assign", p.handleClusterFacesAssign)
+			auth.POST("/movies/:id/face-clusters/:cid/split", p.handleClusterSplit)
+			auth.POST("/movies/:id/face-clusters/:cid/assign", p.handleClusterAssign)
 		}
 	}
 
