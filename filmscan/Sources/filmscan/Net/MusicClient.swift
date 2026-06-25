@@ -13,7 +13,10 @@ struct MusicClient: Sendable {
 
     /// Upload an audio file; returns the server track id (deduped to the existing
     /// track if the same bytes were already uploaded in this workspace).
-    func uploadTrack(fileURL: URL, durationMs: Int?, title: String) async throws -> String {
+    // Returns (trackID, audioAssetID). audioAssetID is the central-assets id for
+    // the audio bytes — the identity/diarize pipeline references it (the recording
+    // asset for voiceprint samples). Both come from the POST /api/tracks response.
+    func uploadTrack(fileURL: URL, durationMs: Int?, title: String) async throws -> (String, Int64?) {
         var fields: [String: String] = [:]
         if let d = durationMs, d > 0 { fields["duration_ms"] = String(d) }
         let mime = mimeForAudio(fileURL)
@@ -30,7 +33,7 @@ struct MusicClient: Sendable {
                 guard let id = extractID(data, wrapperKeys: ["track"]) else {
                     throw Err("uploadTrack: no id in response: \(String(data: data, encoding: .utf8) ?? "")")
                 }
-                return id
+                return (id, extractInt64Field(data, wrapperKeys: ["track"], field: "audio_asset_id"))
             } catch {
                 lastErr = error
                 if attempt < 2 { try? await Task.sleep(nanoseconds: UInt64(attempt + 1) * 500_000_000) }

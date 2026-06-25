@@ -101,6 +101,35 @@ func (p *Plugin) handleScanCallback(c *gin.Context) {
 				_, _ = p.setScanStatus(ctx, ws, mediaID, "failed", "submit analyze: "+err.Error())
 			}
 
+			// Also feed the identity (声纹) modeling layer: diarize the extracted
+			// audio → per-speaker voiceprints (mirrors lawyer). Parse the manifest
+			// for the audio asset id, persist it, submit speech.diarize. Best-effort
+			// and independent of the analyze (subtitle) chain above.
+			if mf, ferr := fetchText(ctx, manifest.DownloadURL); ferr == nil {
+				var m struct {
+					AudioAssetID int64 `json:"audioAssetID"`
+				}
+				if json.Unmarshal([]byte(mf), &m) == nil && m.AudioAssetID > 0 {
+					_ = p.setMediaAudioAsset(ctx, ws, mediaID, m.AudioAssetID)
+					din, _ := json.Marshal(map[string]any{
+						"asset_id":     m.AudioAssetID,
+						"model_folder": p.diarizeModelFolder,
+					})
+					if _, derr := p.Dock.SubmitComputeTask(sdk.SubmitComputeTaskRequest{
+						WorkspaceID:  ws,
+						Skill:        "speech.diarize",
+						Input:        din,
+						CallbackPath: "/internal/v1/film/diarize-callback",
+						RequesterRef: mediaID,
+						AutoStart:    true,
+					}); derr != nil {
+						log.Printf("film scan-callback: submit speech.diarize media=%s: %v", mediaID, derr)
+					}
+				} else {
+					log.Printf("film scan-callback: media=%s manifest has no audioAssetID — skipping diarize", mediaID)
+				}
+			}
+
 		case "film.analyze":
 			_, _ = p.setScanStatus(ctx, ws, mediaID, "analyzing", "落字幕中")
 			srt := pickArtifact(payload.Artifacts, "srt")

@@ -62,6 +62,7 @@ struct Extract: AsyncParsableCommand {
 
         // ── audio → music library ───────────────────────────────────
         var audioTrackID: String? = nil
+        var audioAssetID: Int64? = nil
         var audioDurationMs = 0
         if !noAudio {
             log("audio: exporting .m4a …")
@@ -69,8 +70,10 @@ struct Extract: AsyncParsableCommand {
                 audioDurationMs = res.durationMs
                 let music = MusicClient(base: baseURL, token: tok, workspaceID: workspaceID)
                 log("audio: uploading to music library …")
-                audioTrackID = try await music.uploadTrack(fileURL: res.url, durationMs: res.durationMs, title: mediaName)
-                log("audio: track \(audioTrackID ?? "?") (\(audioDurationMs / 1000)s)")
+                let (tid, aid) = try await music.uploadTrack(fileURL: res.url, durationMs: res.durationMs, title: mediaName)
+                audioTrackID = tid
+                audioAssetID = aid
+                log("audio: track \(audioTrackID ?? "?") asset \(audioAssetID.map(String.init) ?? "?") (\(audioDurationMs / 1000)s)")
             } else {
                 log("audio: no audio track — skipping")
             }
@@ -117,6 +120,7 @@ struct Extract: AsyncParsableCommand {
             media: media,
             workspaceID: workspaceID,
             audioTrackID: audioTrackID,
+            audioAssetID: audioAssetID,
             audioDurationMs: audioDurationMs,
             frames: uploaded,
             faces: faces.faces.map { ManifestFace(timeMs: $0.timeMs, box: $0.box, cluster: $0.cluster, embedding: $0.embedding) },

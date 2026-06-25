@@ -147,6 +147,22 @@ func (p *Plugin) setScanStatus(ctx context.Context, wsID, id, status, detail str
 	return n > 0, nil
 }
 
+// setMediaAudioAsset stamps the movie's extracted-audio asset id (m11) — the
+// recording the film→identity voiceprint pipeline diarizes.
+func (p *Plugin) setMediaAudioAsset(ctx context.Context, wsID, id string, assetID int64) error {
+	_, err := p.DB.ExecContext(ctx,
+		`UPDATE media_items SET audio_asset_id=$3 WHERE workspace_id=$1 AND id=$2`, wsID, id, assetID)
+	return err
+}
+
+// mediaAudioAsset resolves a movie's workspace + extracted-audio asset id (the
+// diarize callback is dock-signed, not user-scoped, so it looks up by id).
+func (p *Plugin) mediaAudioAsset(ctx context.Context, id string) (ws string, assetID int64, err error) {
+	err = p.DB.QueryRowContext(ctx,
+		`SELECT workspace_id, audio_asset_id FROM media_items WHERE id=$1`, id).Scan(&ws, &assetID)
+	return ws, assetID, err
+}
+
 // updateMovieEnrichment writes only the M9 TMDB columns + stamps enriched_at.
 // Separate from updateMovie so /enrich never clobbers user-editable fields.
 // releaseDate is "YYYY-MM-DD" or "" (→ NULL); rating nil → NULL.

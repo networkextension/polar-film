@@ -42,9 +42,10 @@ type Plugin struct {
 	startedAt time.Time
 
 	// Identity feed (声纹/face) — s2s push of voiceprints + face prints.
-	identityBase  string
-	identityToken string
-	httpc         *http.Client
+	identityBase       string
+	identityToken      string
+	diarizeModelFolder string // FluidAudio model dir ON THE AGENT (for speech.diarize)
+	httpc              *http.Client
 }
 
 func New(ctx context.Context, cfg Config) (*Plugin, error) {
@@ -108,9 +109,10 @@ func New(ctx context.Context, cfg Config) (*Plugin, error) {
 		metrics:    newFilmMetrics(),
 		startedAt:  time.Now(),
 
-		identityBase:  strings.TrimRight(strings.TrimSpace(cfg.IdentityBase), "/"),
-		identityToken: strings.TrimSpace(cfg.IdentityToken),
-		httpc:         &http.Client{Timeout: 30 * time.Second},
+		identityBase:       strings.TrimRight(strings.TrimSpace(cfg.IdentityBase), "/"),
+		identityToken:      strings.TrimSpace(cfg.IdentityToken),
+		diarizeModelFolder: strings.TrimSpace(cfg.DiarizeModelFolder),
+		httpc:              &http.Client{Timeout: 30 * time.Second},
 	}, nil
 }
 
@@ -122,6 +124,8 @@ func (p *Plugin) RegisterRoutes(r gin.IRouter) {
 	r.POST("/internal/v1/film/workspace-deleted", p.handleInternalWorkspaceDeleted)
 	// P1a: dock's signed completion callback for film.extract/film.analyze tasks.
 	r.POST("/internal/v1/film/scan-callback", p.handleScanCallback)
+	// Identity feed: dock's signed callback for the speech.diarize task → voiceprints.
+	r.POST("/internal/v1/film/diarize-callback", p.handleDiarizeCallback)
 
 	// /api/film/* — user API. nginx proxies /api/film/* → film-svc. M0 carries
 	// only a _whoami probe to prove the auth chain; movies/people/subtitles/
