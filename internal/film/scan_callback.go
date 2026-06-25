@@ -16,6 +16,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"time"
 
 	sdk "github.com/networkextension/polar-sdk"
@@ -101,32 +102,51 @@ func (p *Plugin) handleScanCallback(c *gin.Context) {
 				_, _ = p.setScanStatus(ctx, ws, mediaID, "failed", "submit analyze: "+err.Error())
 			}
 
-			// Also feed the identity (声纹) modeling layer: diarize the extracted
-			// audio → per-speaker voiceprints (mirrors lawyer). Parse the manifest
-			// for the audio asset id, persist it, submit speech.diarize. Best-effort
-			// and independent of the analyze (subtitle) chain above.
+			// Feed the identity modeling layer from the extract manifest (best-effort,
+			// independent of the analyze/subtitle chain above):
+			//   voice — diarize the extracted audio → per-speaker voiceprints (lawyer pattern)
+			//   face  — each detected face print → identity, referencing its keyframe screenshot
 			if mf, ferr := fetchText(ctx, manifest.DownloadURL); ferr == nil {
 				var m struct {
 					AudioAssetID int64 `json:"audioAssetID"`
+					Faces        []struct {
+						TimeMs    int                          `json:"timeMs"`
+						Box       struct{ X, Y, W, H float64 } `json:"box"`
+						Embedding []float32                    `json:"embedding"`
+					} `json:"faces"`
 				}
-				if json.Unmarshal([]byte(mf), &m) == nil && m.AudioAssetID > 0 {
+				_ = json.Unmarshal([]byte(mf), &m)
+
+				if m.AudioAssetID > 0 {
 					_ = p.setMediaAudioAsset(ctx, ws, mediaID, m.AudioAssetID)
-					din, _ := json.Marshal(map[string]any{
-						"asset_id":     m.AudioAssetID,
-						"model_folder": p.diarizeModelFolder,
-					})
+					din, _ := json.Marshal(map[string]any{"asset_id": m.AudioAssetID, "model_folder": p.diarizeModelFolder})
 					if _, derr := p.Dock.SubmitComputeTask(sdk.SubmitComputeTaskRequest{
-						WorkspaceID:  ws,
-						Skill:        "speech.diarize",
-						Input:        din,
-						CallbackPath: "/internal/v1/film/diarize-callback",
-						RequesterRef: mediaID,
-						AutoStart:    true,
+						WorkspaceID: ws, Skill: "speech.diarize", Input: din,
+						CallbackPath: "/internal/v1/film/diarize-callback", RequesterRef: mediaID, AutoStart: true,
 					}); derr != nil {
 						log.Printf("film scan-callback: submit speech.diarize media=%s: %v", mediaID, derr)
 					}
 				} else {
 					log.Printf("film scan-callback: media=%s manifest has no audioAssetID — skipping diarize", mediaID)
+				}
+
+				// Face → identity. Keyframes were uploaded to film screenshots during
+				// extract; match each face to its frame by timecode for the source ref.
+				if len(m.Faces) > 0 {
+					shots, _ := p.listScreenshots(ctx, ws, mediaID)
+					pushed := 0
+					for _, f := range m.Faces {
+						if len(f.Embedding) == 0 {
+							continue
+						}
+						aid := nearestScreenshotAsset(shots, f.TimeMs)
+						if err := p.identityAddFaceSample(ctx, ws, "vision_fp_r2", f.Embedding, aid,
+							f.TimeMs, []float64{f.Box.X, f.Box.Y, f.Box.W, f.Box.H}, mediaID); err != nil {
+							continue
+						}
+						pushed++
+					}
+					log.Printf("film scan-callback: media=%s faces=%d → identity (%d pushed)", mediaID, len(m.Faces), pushed)
 				}
 			}
 
@@ -170,6 +190,33 @@ func (p *Plugin) workspaceOfMedia(ctx context.Context, id string) (string, error
 	var ws string
 	err := p.DB.QueryRowContext(ctx, `SELECT workspace_id FROM media_items WHERE id=$1`, id).Scan(&ws)
 	return ws, err
+}
+
+// nearestScreenshotAsset returns the central-assets id (int64) of the screenshot
+// whose ts_ms is closest to the face's timecode — the frame the face was seen in.
+// nil if no screenshot has a usable numeric asset id.
+func nearestScreenshotAsset(shots []Screenshot, tsMs int) *int64 {
+	best, bestDiff := -1, 1<<62
+	for i, s := range shots {
+		if s.TsMs == nil {
+			continue
+		}
+		d := *s.TsMs - tsMs
+		if d < 0 {
+			d = -d
+		}
+		if d < bestDiff {
+			bestDiff, best = d, i
+		}
+	}
+	if best < 0 {
+		return nil
+	}
+	id, err := strconv.ParseInt(shots[best].AssetID, 10, 64)
+	if err != nil {
+		return nil
+	}
+	return &id
 }
 
 func pickArtifact(arts []sdk.ComputeTaskArtifact, kind string) *sdk.ComputeTaskArtifact {
