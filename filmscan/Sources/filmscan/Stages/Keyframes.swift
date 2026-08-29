@@ -15,7 +15,7 @@ enum Keyframes {
         let duration = try await asset.load(.duration)
         let totalSec = CMTimeGetSeconds(duration)
         guard totalSec.isFinite, totalSec > 0 else {
-            throw Err("could not read video duration (mp4/mov only; mkv needs demux)")
+            throw Err("could not read video duration — AVFoundation can't decode this file (remux should have handled mkv/webm; is it corrupt?)")
         }
 
         let gen = AVAssetImageGenerator(asset: asset)

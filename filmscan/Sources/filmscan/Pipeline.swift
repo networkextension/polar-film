@@ -17,13 +17,18 @@ struct Pipeline {
     var diarModels: String? = nil
 
     func run() async throws {
+        // AVFoundation (used by every media stage below) can't open .mkv/.webm/etc;
+        // remux such inputs to a temp mp4 first. mediaURL = the file the stages read;
+        // videoURL stays the original (used only for output naming, e.g. the .srt).
+        let mediaURL = try await Remux.ensurePlayable(videoURL, outDir: outDir)
+
         // 16 kHz mono audio is needed by both transcribe and diarize; decode once,
         // on demand (skipped entirely when both their artifacts are cached).
         var samplesCache: [Float]? = nil
         func loadSamples() async throws -> [Float] {
             if let s = samplesCache { return s }
             log("demux: decoding audio → 16kHz mono …")
-            let s = try await Demux.audioSamples16k(videoURL: videoURL)
+            let s = try await Demux.audioSamples16k(videoURL: mediaURL)
             log("demux: \(s.count) samples (~\(s.count / 16000)s)")
             samplesCache = s
             return s
@@ -37,7 +42,7 @@ struct Pipeline {
             frames = cached
         } else {
             log("keyframes: sampling every \(frameIntervalSec)s …")
-            frames = try await Keyframes.run(videoURL: videoURL, outDir: outDir, everySec: frameIntervalSec)
+            frames = try await Keyframes.run(videoURL: mediaURL, outDir: outDir, everySec: frameIntervalSec)
             try saveJSON(frames, to: framesURL)
             log("keyframes: \(frames.frames.count) frames")
         }
@@ -102,7 +107,7 @@ struct Pipeline {
                 final = cached
             } else {
                 log("fuse: \(audioTurns.isEmpty ? "visual-only" : "audio+visual") attribution …")
-                let f = try await Fuse.run(videoURL: videoURL, outDir: outDir, transcript: t, audioTurns: audioTurns)
+                let f = try await Fuse.run(videoURL: mediaURL, outDir: outDir, transcript: t, audioTurns: audioTurns)
                 try saveJSON(f, to: fusedURL)
                 let n = f.segments.filter { !$0.speakerKey.isEmpty }.count
                 log("fuse: \(n)/\(f.segments.count) lines attributed to a speaker")

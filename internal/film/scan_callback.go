@@ -23,14 +23,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// extractOutput is the result shape the agent's film.extract skill returns
-// (P1b defines it; kept minimal — only what analyze + chaining needs).
-type extractOutput struct {
-	AudioTrackID    string `json:"audio_track_id"`
-	ManifestAssetID int64  `json:"manifest_asset_id"`
-	KeyframeCount   int    `json:"keyframe_count"`
-}
-
 // POST /internal/v1/film/scan-callback (signed by dock).
 func (p *Plugin) handleScanCallback(c *gin.Context) {
 	body, err := io.ReadAll(io.LimitReader(c.Request.Body, 16<<20))
@@ -66,14 +58,21 @@ func (p *Plugin) handleScanCallback(c *gin.Context) {
 
 		switch payload.Skill {
 		case "film.extract":
-			var out extractOutput
-			_ = json.Unmarshal(payload.Result, &out)
+			// The extract stage returns the demuxed audio as an "audio" artifact
+			// (uploaded to assets). The ANE analyze stage consumes only that — so
+			// extract (cheap x86) and analyze (Apple-Silicon hub) can run on
+			// different machines, audio transiting via assets.
+			audio := pickArtifact(payload.Artifacts, "audio")
+			if audio == nil || audio.DownloadURL == "" {
+				_, _ = p.setScanStatus(ctx, ws, mediaID, "failed", "extract 无音频产物")
+				return
+			}
 			_, _ = p.setScanStatus(ctx, ws, mediaID, "extracted", "转写排队")
-			// Chain the ANE analyze stage (arm64 + Neural Engine only).
+			// Chain the ANE analyze stage (arm64 + Neural Engine only). No token
+			// needed: audio in via the signed asset URL, SRT back as an artifact.
 			input, _ := json.Marshal(map[string]any{
-				"media_id":          mediaID,
-				"audio_track_id":    out.AudioTrackID,
-				"manifest_asset_id": out.ManifestAssetID,
+				"media_id":  mediaID,
+				"audio_url": audio.DownloadURL,
 			})
 			constraints, _ := json.Marshal(map[string]any{"required_arch": "arm64", "needs_ane": true})
 			if _, err := p.Dock.SubmitComputeTask(sdk.SubmitComputeTaskRequest{

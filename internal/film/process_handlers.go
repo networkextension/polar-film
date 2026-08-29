@@ -40,10 +40,17 @@ func (p *Plugin) handleMovieProcess(c *gin.Context) {
 		return
 	}
 
-	// Stage 1: extract (any-arch). The callback chains the ANE analyze stage.
+	// Stage 1: extract (any-arch, incl. cheap x86). The agent shells `filmscan
+	// extract` then pushes the keyframes into THIS film service as the requesting
+	// user — so we forward the caller's token + our public origin + workspace.
+	// (TTL note: the user token is ~30min; extract normally finishes in minutes.
+	// Durable fix = a dock-minted task token — see task-processing-v2 §follow-ups.)
 	input, _ := json.Marshal(map[string]any{
-		"video_url": strings.TrimSpace(req.VideoURL),
-		"media_id":  mediaID,
+		"video_url":     strings.TrimSpace(req.VideoURL),
+		"media_id":      mediaID,
+		"workspace_id":  wsID,
+		"server":        p.PublicURL,
+		"forward_token": extractAccessToken(c),
 	})
 	task, err := p.Dock.SubmitComputeTask(sdk.SubmitComputeTaskRequest{
 		WorkspaceID:  wsID,
